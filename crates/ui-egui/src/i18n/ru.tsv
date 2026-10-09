@@ -1994,3 +1994,6 @@
 	Created a PDF from {n} files; left out: {names}	PDF создан из файлов: {n}; пропущены: {names}
 	Created a PDF from the first {n} files	PDF создан из первых файлов: {n}
 	Go to page…	Перейти на страницу…
+	Based on PdfCraft by the ArtCraft team.	На основе PdfCraft, созданного командой ArtCraft.
+	Upstream Discord	Discord исходного проекта
+	Upstream community	Сообщество исходного проекта

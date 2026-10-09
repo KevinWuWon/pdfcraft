@@ -1059,7 +1059,6 @@ pub fn show(app: &mut PdfCraftApp, ctx: &egui::Context) {
                     2 => crate::credits::models_ui(ui),
                     _ => {
                         ui.horizontal(|ui| {
-                            widgets::artcraft_mark(ui, 40.0);
                             ui.vertical(|ui| {
                                 ui.label(egui::RichText::new("PdfCraft").font(theme::semibold(20.0)));
                                 ui.label(crate::i18n::fmt(tl!("Version {v}"), &[("v", env!("CARGO_PKG_VERSION"))]));
@@ -1075,10 +1074,7 @@ pub fn show(app: &mut PdfCraftApp, ctx: &egui::Context) {
                             .small(),
                         );
                         ui.add_space(12.0);
-                        ui.horizontal(|ui| {
-                            ui.label(egui::RichText::new(tl!("Part of")).color(t.text_muted));
-                            widgets::artcraft_logo(ui, 16.0);
-                        });
+                        ui.label(egui::RichText::new(tl!("Based on PdfCraft by the ArtCraft team.")).color(t.text_muted));
                         ui.add_space(6.0);
                         if let Some(cmd) = widgets::community_links(ui) {
                             link_command = Some(cmd);
