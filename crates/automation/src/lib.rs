@@ -22,6 +22,7 @@ mod measure;
 mod printing;
 mod redact;
 mod signing;
+mod tags;
 mod tools;
 
 use std::collections::HashMap;
@@ -544,6 +545,19 @@ impl Automation {
             "comment_reply" => self.comment_reply(&a)?,
             "comment_set_status" => self.comment_set_status(&a)?,
             "sign_list" => self.sign_list(&a)?,
+            "accessibility_tag_content" => self.accessibility_tag_content(&a)?,
+            "accessibility_tags_find" => self.accessibility_tags_find(&a)?,
+            "accessibility_tags_move" => self.accessibility_tag_edit(&a, "move_many")?,
+            "accessibility_tags_delete" => self.accessibility_tag_edit(&a, "delete_many")?,
+            "accessibility_tag_identifier_set" => self.accessibility_tag_edit(&a, "identifier")?,
+            "accessibility_tag_artifact" => self.accessibility_tag_edit(&a, "artifact")?,
+            "accessibility_role_map_set" => self.accessibility_tag_edit(&a, "role_map")?,
+            "accessibility_tag_content_move" => self.accessibility_tag_edit(&a, "content_move")?,
+            "accessibility_tags" => self.accessibility_tags(&a)?,
+            "accessibility_tag_create" => self.accessibility_tag_edit(&a, "create")?,
+            "accessibility_tag_update" => self.accessibility_tag_edit(&a, "update")?,
+            "accessibility_tag_move" => self.accessibility_tag_edit(&a, "move")?,
+            "accessibility_tag_delete" => self.accessibility_tag_edit(&a, "delete")?,
             "accessibility_check" => self.a11y_check(&a)?,
             "ocr_recognize" => self.ocr_recognize(&a)?,
             "js_run" => self.js_run(&a)?,
@@ -1639,6 +1653,7 @@ fn summary(d: &Document) -> Value {
     json!({
         "doc": d.id.0,
         "name": d.name,
+        "object_identity_generation": d.object_identity_generation(),
         "path": d.path,
         "pages": d.info.pages.len(),
         "dirty": d.dirty,

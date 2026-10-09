@@ -1999,6 +1999,9 @@
 	Choose a PNG or JPEG image (up to 4 MiB). Transparency is preserved.	Elija una imagen PNG o JPEG (hasta 4 MiB). Se conserva la transparencia.
 	Couldn't import the signature image: {e}	No se pudo importar la imagen de la firma: {e}
 	Go to page…	Ir a la página…
+
+# Accessibility tag editor command and upstream attribution.
+	Edit document tags	Editar etiquetas del documento
 	Based on PdfCraft by the ArtCraft team.	Basado en PdfCraft, desarrollado por el equipo de ArtCraft.
 	Upstream Discord	Discord del proyecto original
 	Upstream community	Comunidad del proyecto original

@@ -27,6 +27,8 @@ mod actions_ui;
 pub mod canvas;
 mod chrome;
 mod combine_ui;
+mod tag_dialogs;
+mod tags_ui;
 pub use combine_ui::{Columns as CombineColumns, Lock as CombineLock, SortKey};
 mod commands;
 mod comment_props;
@@ -149,6 +151,8 @@ pub enum RightPanel {
     Signatures,
     /// Accessibility Checker results.
     Accessibility,
+    /// The document's editable accessibility structure.
+    Tags,
     /// Advanced Search results.
     Search,
     /// Compare files: the differences.
@@ -1293,6 +1297,7 @@ impl PdfCraftApp {
                     "attachments" => Some(RightPanel::Attachments),
                     "signatures" => Some(RightPanel::Signatures),
                     "accessibility" => Some(RightPanel::Accessibility),
+                    "tags" => Some(RightPanel::Tags),
                     "search" => Some(RightPanel::Search),
                     "compare" => Some(RightPanel::Compare),
                     "none" => None,

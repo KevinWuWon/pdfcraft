@@ -2044,6 +2044,108 @@
 	Choose a PNG or JPEG image (up to 4 MiB). Transparency is preserved.	选择 PNG 或 JPEG 图像（最大 4 MiB）。透明度会保留。
 	Couldn't import the signature image: {e}	无法导入签名图像：{e}
 	Go to page…	转到页面…
+
+# Accessibility tag editor and upstream attribution.
+	Edit document tags	编辑文档标签
+	Accessibility tags	无障碍标签
+	Ambiguous, reused or unsupported content is refused without changing the document.	对于存在歧义、被重复使用或不受支持的内容，将拒绝操作且不修改文档。
+	Apply or cancel the property changes before selecting another tag.	选择其他标签前，请应用或取消属性更改。
+	Apply or cancel the property changes first.	请先应用或取消属性更改。
+	Apply properties	应用属性
 	Based on PdfCraft by the ArtCraft team.	基于 ArtCraft 团队开发的 PdfCraft。
+	Cancel properties	取消属性更改
+	Changing an ID can break external links that use the old ID.	更改 ID 可能导致使用旧 ID 的外部链接失效。
+	Click page content to find its tag. Escape cancels.	点击页面内容以查找其标签。按 Esc 取消。
+	Collapse all tags	折叠所有标签
+	Convert marked content	转换已标记的内容
+	Convert to artifact:	转换为装饰性内容：
+	Convert to artifact…	转换为装饰性内容…
+	Creating a tag does not automatically associate page content.	创建标签不会自动关联页面内容。
+	Delete subtree	删除子树
+	Delete tag structure? Page artwork stays unchanged; it does not become an artifact.	删除标签结构？页面图文保持不变，不会变为装饰性内容。
+	Delete tag…	删除标签…
+	Edit role mappings…	编辑角色映射…
+	Expand all tags	展开所有标签
+	Find tag from selection	查找所选内容的标签
+	Find tags	查找标签
+	Go to page	转到页面
+	Highlight content	高亮显示内容
+	Keep tag	保留标签
+	Keep tagged content	保留带标签的内容
+	Language uses a language tag such as en-US. Empty text removes the property.	语言使用 en-US 等语言标签。清空文本可移除该属性。
+	Mapped type:	映射类型：
+	Move content to…	将内容移动到…
+	Move selected tags…	移动所选标签…
+	New child tag	新建子标签
+	New tag	新建标签
+	New tag after	在后面新建标签
+	No matching tags.	没有匹配的标签。
+	No supported painted content bounds for this tag on this page.	此标签在本页没有受支持的绘制内容边界。
+	No tag with supported content bounds intersects this selection.	没有内容边界受支持的标签与此选区相交。
+	Outlines show content selection bounds, not pixel-exact painted shapes.	轮廓显示内容的选取边界，并非像素级精确的绘制形状。
+	Properties	属性
+	Reveal	定位
+	Select content on page	在页面上选择内容
+	Selected for deletion:	已选择删除：
+	Show content items	显示内容项
+	Standard types	标准类型
+	Structure warnings	结构警告
+	Tag ID	标签 ID
+	Tag ID:	标签 ID：
+	Tag options	标签选项
+	Tag properties	标签属性
+	The document changed. Cancel to reload these properties.	文档已更改。请取消以重新加载这些属性。
+	The selected tags and descendants will be removed from the accessibility tree. Their marked content becomes decorative; page artwork stays visible.	所选标签及其后代将从无障碍树中移除。其标记内容将变为装饰性内容，页面图文仍然可见。
+	This document does not allow structure editing.	此文档不允许编辑结构。
+	This document has no accessibility tags.	此文档没有无障碍标签。
+	Type, title or text	类型、标题或文本
+	Unwrap tag	移除标签并保留子项
 	Upstream Discord	上游项目 Discord
 	Upstream community	上游项目社区
+	matching tags	个匹配标签
+	tags selected	个已选标签
+	Actual text	实际文本
+	Abbreviation expansion	缩写展开文本
+	Edit role mappings	编辑角色映射
+	Map a custom tag role to a standard structure type. Each mapping affects every tag using that role in this document.	将自定义标签角色映射到标准结构类型。每项映射都会影响此文档中使用该角色的所有标签。
+	No role mappings yet.	尚无角色映射。
+	Custom role	自定义角色
+	For example: ChapterTitle	例如：ChapterTitle
+	Maps to	映射到
+	For example: H1	例如：H1
+	Standard type	标准类型
+	Choose a standard type…	选择标准类型…
+	{affected} tag(s) currently use this custom role.	目前有 {affected} 个标签使用此自定义角色。
+	The document changed while this dialog was open. Your draft is kept. Reopen the dialog to work with the current document.	此对话框打开期间文档已更改。草稿已保留。请重新打开对话框以使用当前文档。
+	Could not apply: {error}	无法应用：{error}
+	Apply mapping	应用映射
+	Remove mapping	移除映射
+	Move to tag	移动到标签
+	Move {count} selected tag(s), keeping their subtrees and content.	移动 {count} 个所选标签，并保留其子树和内容。
+	Move content child {index} from tag {source}.	移动标签 {source} 中的第 {index} 个内容子项。
+	Find destination	查找目标
+	Find destination by role, title, or object reference	按角色、标题或对象引用查找目标
+	Structure tree root	结构树根节点
+	More destinations available. Refine your search.	还有更多目标。请缩小搜索范围。
+	Unavailable tag {id}	标签 {id} 不可用
+	Choose a destination tag	选择目标标签
+	Destination: {destination_name}	目标：{destination_name}
+	Position (1-based)	位置（从 1 开始）
+	Valid range: 1–{limit}	有效范围：1–{limit}
+	Positions count all siblings, including content leaves. The position is measured after the moving items are removed; the last position appends.	位置计入所有同级项，包括内容叶节点。位置按移除待移动项之后的顺序计算；最后一个位置表示追加到末尾。
+	The document changed. This move draft is kept, but reopen the dialog before applying so content positions and tag identities can be checked again.	文档已更改。此移动草稿已保留，但请在应用前重新打开对话框，以便再次检查内容位置和标签身份。
+	The original selection is no longer available.	原始选择已不可用。
+	Choose a destination outside the moving subtrees. Content must belong to a tag.	请选择待移动子树之外的目标。内容必须属于某个标签。
+	Could not move: {error}	无法移动：{error}
+	Move	移动
+	Edit tag properties	编辑标签属性
+	Convert selected tags to artifacts	将所选标签转换为装饰性内容
+	Object {id}	对象 {id}
+	{count} tags	{count} 个标签
+	 + {count} tags	 + {count} 个标签
+	Move content up	上移内容
+	Move content down	下移内容
+	Content · MCID {id}	内容 · MCID {id}
+	Content · MCID {id} · stream	内容 · MCID {id} · 流
+	Object reference · {object}	对象引用 · {object}
+	Unsupported · {description}	不支持 · {description}

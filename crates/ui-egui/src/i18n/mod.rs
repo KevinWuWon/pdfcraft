@@ -579,6 +579,43 @@ mod tests {
         assert_eq!(fmt("unchanged", &[]), "unchanged");
     }
 
+    #[test]
+    fn tag_editor_command_and_upstream_attribution_cover_every_catalog() {
+        for lang in Lang::all().filter(|lang| *lang != Lang::EN) {
+            for label in ["Edit document tags", "Based on PdfCraft by the ArtCraft team.", "Upstream Discord", "Upstream community"] {
+                assert!(has(lang, label), "{} lacks {label:?}", lang.code());
+                assert_ne!(tr(lang, label), label, "{} leaves {label:?} in English", lang.code());
+            }
+        }
+    }
+
+    /// These labels reach tl! through variables, so the literal source scans cannot find them.
+    #[test]
+    fn tag_editor_property_and_move_labels_cover_complete_catalogs() {
+        for code in ["fr", "ru", "zh-hans"] {
+            let lang = Lang::from_code(code).expect("complete catalog registered");
+            for label in [
+                "Title",
+                "Alternate text",
+                "Actual text",
+                "Language",
+                "Abbreviation expansion",
+                "Move up",
+                "Move down",
+                "Indent",
+                "Outdent",
+                "Move content up",
+                "Move content down",
+                "Edit tag properties",
+                "Convert selected tags to artifacts",
+            ] {
+                assert!(has(lang, label), "{code} lacks tag editor label {label:?}");
+            }
+            // Substituted document values must stay literal, even when they contain placeholders.
+            assert!(fmt(tr(lang, "Destination: {destination_name}"), &[("destination_name", "Chapter {count}")]).contains("Chapter {count}"));
+        }
+    }
+
     /// Japanese translates every registered command and every All tools group, section and item.
     #[test]
     fn japanese_covers_commands_and_catalogue() {

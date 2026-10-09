@@ -28,6 +28,8 @@ pub trait Device<'a> {
         mask: Option<SoftMask<'a>>,
         blend_mode: BlendMode,
     );
+    /// PdfCraft: one logical text glyph, before any separate fill/stroke callbacks.
+    fn text_glyph(&mut self, _glyph: &Glyph<'a>) {}
     /// Draw a glyph.
     fn draw_glyph(
         &mut self,
@@ -54,6 +56,14 @@ pub trait Device<'a> {
     ) {
         self.draw_path(&rect.to_path(0.1), transform, paint, draw_mode);
     }
+    /// PdfCraft: page content ended; annotation appearances follow in a separate namespace.
+    fn end_page_content(&mut self) {}
+    /// PdfCraft: enter an XObject invocation. Default hooks leave rendering unchanged.
+    fn begin_xobject(&mut self, _id: hayro_syntax::object::ObjectIdentifier, _form: bool) {}
+    /// PdfCraft: leave the matching XObject invocation.
+    fn end_xobject(&mut self) {}
+    /// PdfCraft: annotation identity and its declared rectangle in page view space.
+    fn annotation_rect(&mut self, _id: hayro_syntax::object::ObjectIdentifier, _rect: Rect) {}
     /// Called at the beginning of a marked content sequence (BMC/BDC).
     ///
     /// The tag is the marked content tag (e.g. b"P", b"Span"). The mcid is

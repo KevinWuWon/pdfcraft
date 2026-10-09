@@ -8755,11 +8755,11 @@ title = "Tags panel (new, delete, find, change to artifact)"
 area = "M"
 tier = "P1"
 milestone = "M12"
-status = "planned"
-commands = []
-tools = []
-evidence = []
-notes = ""
+status = "partial"
+commands = ["a11y.tags"]
+tools = ["accessibility_tags", "accessibility_tag_create", "accessibility_tag_delete", "accessibility_tags_find", "accessibility_tag_artifact", "accessibility_tags_move", "accessibility_tag_content_move"]
+evidence = ["crates/ui-egui/tests/tags.rs::artifact_conversion_removes_exact_tag_and_undo_restores_content", "crates/ui-egui/tests/tags.rs::drag_after_adjacent_sibling_preserves_mixed_child_order"]
+notes = "Native mixed-content tree, multi-selection, creation, atomic moves/deletion, renderer-backed bounds and reverse lookup. Artifact conversion supports exact unambiguous marked content; reused/nested/unsupported streams and OBJR conversion are refused. Creating tags does not tag previously unmarked content. See docs/accessibility/tag-editor.md."
 
 [[feature]]
 id = "a11y.tag-properties"
@@ -8767,11 +8767,11 @@ title = "Tag properties (type, title, actual text, alternate text, language)"
 area = "M"
 tier = "P1"
 milestone = "M12"
-status = "planned"
-commands = []
-tools = []
-evidence = []
-notes = ""
+status = "shipped"
+commands = ["a11y.tags"]
+tools = ["accessibility_tag_update", "accessibility_tag_identifier_set"]
+evidence = ["crates/ui-egui/tests/tags.rs::edit_properties_persist_and_undo", "crates/ui-egui/tests/tags.rs::identifier_edit_persists_and_undoes"]
+notes = "Buffered type/title/ActualText/Alt/Lang/E edits, reference-aware ID edits, persistent save/reopen and undo. Unsupported structure and reference-sensitive changes fail atomically."
 
 [[feature]]
 id = "a11y.role-map"
@@ -8779,11 +8779,11 @@ title = "Role map editor"
 area = "M"
 tier = "P2"
 milestone = "M12"
-status = "planned"
-commands = []
-tools = []
-evidence = []
-notes = ""
+status = "partial"
+commands = ["a11y.tags"]
+tools = ["accessibility_role_map_set"]
+evidence = ["crates/ui-egui/tests/tag_dialogs.rs::role_mapping_changes_all_matching_tags_and_survives_save_and_undo", "crates/ui-egui/tests/tag_dialogs.rs::rejected_role_mapping_keeps_draft_for_correction"]
+notes = "Native custom RoleMap editor with cycle/standard-role/in-use removal validation. PDF 2.0 namespace-specific role mapping remains unsupported."
 
 [[feature]]
 id = "a11y.class-map"

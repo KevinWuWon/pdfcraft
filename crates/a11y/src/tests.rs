@@ -277,5 +277,49 @@ fn setting_alt_text_and_marking_decorative() {
     let c = doc.resolve(pages[0].dict.get(b"Contents").unwrap());
     let pdfcraft_cos::Object::Stream(c) = &*c else { panic!("one content stream") };
     let text = String::from_utf8(c.decoded().unwrap()).unwrap();
-    assert!(text.contains("/Artifact BMC") && !text.contains("/MCID 0"), "{text}");
+    let operations = pdfcraft_content::parse(text.as_bytes());
+    assert!(
+        operations.ops.iter().any(|op| op.op == b"BDC"
+            && op.name(0) == Some(b"Artifact")
+            && op.operands.get(1).and_then(pdfcraft_cos::Object::as_dict).is_some_and(|d| !d.contains(b"MCID"))),
+        "{text}"
+    );
+    assert!(!text.contains("/MCID 0"), "{text}");
+}
+
+#[test]
+fn existing_decorative_action_repairs_nested_parent_tree_and_refuses_idtree() {
+    use pdfcraft_cos::{Dict, ObjRef, Object, PdfString};
+    let mut doc = figures_doc();
+    let figure = figures(&doc)[0].obj;
+    let root = crate::tags::inspect(&doc).unwrap().root.unwrap();
+    let pt = doc.get(root).as_dict().unwrap().reference(b"ParentTree").unwrap();
+    let mut leaf = doc.get(pt).as_dict().unwrap().clone();
+    leaf.set(b"Limits", Object::Array(vec![Object::Int(0), Object::Int(0)]));
+    leaf.set(b"Private", Object::Int(73));
+    let leaf = doc.add(leaf);
+    doc.update_dict(pt, |d| {
+        d.remove(b"Nums");
+        d.set(b"Kids", Object::Array(vec![Object::Ref(leaf)]));
+    })
+    .unwrap();
+    let mut protected = doc.clone();
+    protected.update_dict(figure, |d| d.set(b"ID", Object::String(PdfString::text("figure-id")))).unwrap();
+    let mut idtree = Dict::new();
+    idtree.set(b"Names", Object::Array(vec![Object::String(PdfString::text("figure-id")), Object::Ref(figure)]));
+    protected.update_dict(root, |d| d.set(b"IDTree", Object::Dict(idtree))).unwrap();
+    let before = pdfcraft_cos::write_full(&protected, &Default::default()).unwrap();
+    assert!(mark_decorative(&mut protected, figure).is_err());
+    assert_eq!(pdfcraft_cos::write_full(&protected, &Default::default()).unwrap(), before);
+    mark_decorative(&mut doc, figure).unwrap();
+    let tree = crate::tags::inspect(&doc).unwrap();
+    assert!(tree.issues.is_empty(), "{:?}", tree.issues);
+    assert!(tree.element(figure).is_none());
+    assert_eq!(doc.get(leaf).as_dict().unwrap().int(b"Private"), Some(73));
+    let node = doc.get(leaf);
+    let nums = node.as_dict().unwrap().get(b"Nums").unwrap().as_array().unwrap();
+    assert_eq!(nums[1].as_array().unwrap()[0], Object::Null);
+    assert_eq!(nums[1].as_array().unwrap()[1].as_ref(), Some(ObjRef::new(8, 0)));
+    let bytes = pdfcraft_cos::write_full(&doc, &Default::default()).unwrap();
+    assert!(crate::tags::inspect(&Document::open(std::sync::Arc::new(bytes)).unwrap()).unwrap().issues.is_empty());
 }

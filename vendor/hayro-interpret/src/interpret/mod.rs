@@ -11,7 +11,7 @@ use crate::interpret::state::{TextStateFont, handle_gs};
 use crate::interpret::text::TextRenderingMode;
 use crate::pattern::{Pattern, ShadingPattern};
 use crate::shading::Shading;
-use crate::util::{OptionLog, RectExt};
+use crate::util::{OptionLog, RectExt, TransformExt};
 use crate::x_object::{
     FormXObject, ImageXObject, XObject, draw_form_xobject, draw_image_xobject, draw_xobject,
 };
@@ -152,6 +152,7 @@ pub fn interpret_page<'a>(
 ) {
     let resources = page.resources();
     interpret(page.typed_operations(), resources, context, device);
+    device.end_page_content();
 
     if context.settings.render_annotations
         && let Some(annot_arr) = page.raw().get::<Array<'_>>(ANNOTS)
@@ -169,6 +170,10 @@ pub fn interpret_page<'a>(
                 && !matches!(annot.get::<hayro_syntax::object::Name<'_>>(SUBTYPE).as_deref(), Some(b"Widget" | b"Link"))
             {
                 continue;
+            }
+
+            if let (Some(id), Some(rect)) = (annot.obj_id(), annot.get::<Rect>(RECT)) {
+                device.annotation_rect(id, (page.initial_transform(true).to_kurbo() * rect.to_kurbo().to_path(0.1)).bounding_box());
             }
 
             // PdfCraft patch: `/N` may be a stream or a dictionary of appearance states selected
@@ -566,7 +571,10 @@ pub fn interpret<'a>(
                 // 1. A Name that references an entry in the Resources/Properties dictionary
                 // 2. An inline dictionary with an OC key
 
-                let mcid = dict_or_stream(bdc.1).and_then(|(props, _)| props.get::<i32>(MCID));
+                let mcid = dict_or_stream(bdc.1)
+                    .map(|(props, _)| props.clone())
+                    .or_else(|| bdc.1.clone().into_name().and_then(|name| resources.properties.get::<Dict<'_>>(name)))
+                    .and_then(|props| props.get::<i32>(MCID));
 
                 let oc = bdc
                     .1
@@ -744,15 +752,20 @@ pub fn interpret<'a>(
             TypedInstruction::XObject(x) => {
                 let cache = context.interpreter_cache.object_cache.clone();
                 let transfer_function = context.get().graphics_state.transfer_function.clone();
-                if let Some(x_object) = resources.get_x_object(x.0).and_then(|s| {
+                let stream = resources.get_x_object(x.0);
+                if let Some(x_object) = stream.as_ref().and_then(|s| {
                     XObject::new(
-                        &s,
+                        s,
                         &context.settings.warning_sink,
                         &cache,
                         transfer_function.clone(),
                     )
                 }) {
-                    draw_xobject(&x_object, resources, context, device);
+                    if let Some(stream) = stream {
+                        device.begin_xobject(stream.obj_id(), matches!(x_object, XObject::FormXObject(_)));
+                        draw_xobject(&x_object, resources, context, device);
+                        device.end_xobject();
+                    }
                 }
             }
             TypedInstruction::InlineImage(i) => {

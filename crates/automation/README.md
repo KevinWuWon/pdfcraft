@@ -42,3 +42,49 @@ Implemented: `initialize` (protocol 2025-06-18, 2025-03-26, 2024-11-05), `ping`,
 2. Add a `ToolDef` in `src/tools.rs`: a precise description, the schema, `ro()`/`destructive()`, and `cmd()` if a registry command exists.
 3. Handle it in `Automation::call`, validating pages and positions with the existing helpers.
 4. Add an end-to-end test in `tests/automation.rs`. `tool_table_is_well_formed` checks names, schemas and command links.
+
+## Document tags
+
+`accessibility_tags` inspects the structure tree (including diagnostics and ordered mixed kids).
+The create/update/move/delete tools use persistent `{ "number": N, "generation": G }`
+identities from that inspection, never transient row numbers. Edits and incremental saves
+retain them; full rewrites (including default Save As) can renumber objects. Re-inspect
+after full save/reopen before addressing tags again. Document summaries expose
+`object_identity_generation`; discard cached identities when it changes (also on
+undo, redo and revert). `position` is 1-based among
+all kids, including MCID/MCR/OBJR content references; moves count after removing the
+source. Omit `parent` for the root. Text properties omitted from an update are preserved,
+`null` clears them, and strings set them. `mode: "unwrap"` replaces a tag with its kids;
+`mode: "subtree"` removes the tag and descendants and their structure associations.
+Neither deletion mode deletes page drawing content. Every mutation is undoable and
+returns the document summary and new tree; creation also returns `created`.
+
+This is manual structure editing, not automatic content tagging or PDF/UA certification.
+Malformed or ambiguous structures are inspected with diagnostics and conservatively
+refused for editing rather than silently repaired.
+
+`accessibility_tag_content` reads one page's marked-content geometry and text without
+changing the PDF. Regions use displayed-page points (top-left origin, rotation and crop
+applied), and are primitive envelopes rather than exact painted-pixel masks. Match by
+page object, MCID and stream identity, not text or reading order. A null stream is the
+page content sequence; an object identity is a Form XObject stream. Explicit MCR stream
+references without an exact returned match are unavailable, never a reason to fall back
+to a page MCID. OBJR annotation regions are declared rectangles; XObject regions are
+painted envelopes. Inspect `issues` for incomplete coverage and never invent missing
+regions.
+
+`accessibility_tags_find` accepts a 1-based `page` and 1–4096 `regions` in the same
+page-view coordinates (`[left, top, right, bottom]`; zero-size point rectangles allowed).
+It returns every direct tag owner hit by the selection, plus coverage/structure `issues`
+even when no tags match. Full page, stream and object identities are matched exactly.
+It never chooses an arbitrary owner for an ambiguous selection.
+
+Advanced tools: `accessibility_role_map_set` edits custom role mappings (null removes);
+`accessibility_tag_content_move` reassigns existing content leaves using `source`,
+`source_position`, `destination`, and destination `position`; `accessibility_tags_move`
+and `accessibility_tags_delete` apply atomic multi-tag operations. `accessibility_tag_identifier_set`
+updates IDTree-aware IDs (null clears); external fragment links may break, and unresolved
+Headers/structure destinations are rejected. `accessibility_tag_artifact` converts exact
+owned marks and removes the tag subtree, with explicit `include_descendants`.
+See [advanced structure actions](../../docs/accessibility/tag-editor.md#advanced-structure-actions)
+for bounds, identity preservation and supported-tree restrictions.

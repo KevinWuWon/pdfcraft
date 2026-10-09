@@ -2019,6 +2019,9 @@ action wizard	Start	ప్రారంభించు
 	Pin folder to Home…	ఫోల్డర్‌ను హోమ్‌కు పిన్ చేయి…
 	No recent files	ఇటీవలి ఫైళ్లు లేవు
 	Go to page…	పేజీకి వెళ్లు…
+
+# Accessibility tag editor command and upstream attribution.
+	Edit document tags	పత్రం ట్యాగ్‌లను సవరించు
 	Based on PdfCraft by the ArtCraft team.	ArtCraft బృందం రూపొందించిన PdfCraft ఆధారంగా నిర్మించబడింది.
 	Upstream Discord	మూల ప్రాజెక్టు Discord
 	Upstream community	మూల ప్రాజెక్టు కమ్యూనిటీ

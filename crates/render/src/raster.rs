@@ -252,6 +252,19 @@ impl PageRenderer {
         self.pdf.as_ref().map(|p| p.pages().len()).unwrap_or(0)
     }
 
+    /// Stream-scoped marked-content geometry in page view coordinates. Never panics.
+    pub fn tag_content(&mut self, page: usize) -> Result<crate::tagged::PageTagContent, String> {
+        let pdf = self.pdf.as_ref().ok_or_else(|| "the document could not be parsed".to_string())?;
+        match catch_unwind(AssertUnwindSafe(|| crate::tagged::extract_page(pdf, page, &self.settings))) {
+            Ok(Some(content)) => Ok(content),
+            Ok(None) => Err(format!("page {} is out of range", page.saturating_add(1))),
+            Err(panic) => {
+                self.pdf = parse(&self.bytes, self.config.password.as_deref());
+                Err(format!("tag geometry extraction failed: {}", panic_message(&panic)))
+            }
+        }
+    }
+
     /// Render one page. Never panics.
     pub fn render(&mut self, req: RenderRequest) -> RenderedPage {
         let start = Stopwatch::start();

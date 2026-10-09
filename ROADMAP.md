@@ -12,15 +12,15 @@ Detailed task lists and acceptance tests are in `plan/execution-plan.md` (local-
 
 The unit is **wall-clock hours of agent work** (Claude Opus 5.5 coding continuously; human review time not included).
 
-**Where we are (2026-10-07, measured by `cargo xtask parity` over 806 tracked Acrobat Pro features; 23 more are Adobe-cloud-only and out of scope):**
+**Where we are (2026-10-09, measured by `cargo xtask parity` over 806 tracked Acrobat Pro features; 23 more are Adobe-cloud-only and out of scope):**
 
 | Tier | Features | Shipped | Partial | Shipped % | Weighted % (partial = ½) |
 |---|---|---|---|---|---|
-| P0 (must-have for 1.0) | 251 | 222 | 25 | 88.4% | 93.4% |
-| P1 | 326 | 174 | 38 | 53.4% | 59.2% |
-| P2 | 186 | 14 | 7 | 7.5% | 9.4% |
+| P0 (must-have for 1.0) | 251 | 224 | 24 | 89.2% | 94.0% |
+| P1 | 326 | 176 | 42 | 54.0% | 60.4% |
+| P2 | 186 | 16 | 10 | 8.6% | 11.3% |
 | P3 | 43 | 1 | 0 | 2.3% | 2.3% |
-| **All** | **806** | **411** | **70** | **51.0%** | **55.3%** |
+| **All** | **806** | **417** | **76** | **51.7%** | **56.5%** |
 
 **Effort-weighted parity: ≈ 30–35%.** Feature counts overstate progress: the remaining features include the hardest ones (our own renderer and font engine, editing existing text and reflow, OCR beyond Latin, XFA, PDF/A/X/UA preflight, Office export, long-term signature validation). Weighting each milestone by its estimated size gives about a third of the total work done. See **[Honest assessment](#honest-assessment-2026-10-05)** for what the numbers don't show.
 
@@ -101,7 +101,7 @@ Hours are for a single agent (low–high). "Done" is the estimated fraction of t
 | M9 | Signatures (PAdES, validation) | 160–280 | 55% | 70–125 | Done: new `sign` crate (DER, X.509, CMS, PKCS #12 on RustCrypto; aws-lc-rs for RSA private keys); PAdES B-B signing (visible, invisible, existing fields, certification with DocMDP); validation with trust store and changes-after-signing classification; self-signed digital IDs; Signatures panel, message bar, sign dialogs; agent tools. Checked with pdfsig and OpenSSL. Done since: macOS Keychain and Windows Current User Personal store signing (software-backed CNG keys), certificate viewer, signed documents protected from rewrites. Missing: timestamps (B-T), LTV (DSS, OCSP, CRL), FieldMDP, smart cards, PKCS #11 |
 | M10 | OCR, create, export, print | 200–350 | 33% | 130–235 | Done: create from blank/text/PNG/JPEG/TIFF (multi-page)/GIF/BMP; export PNG/JPEG/TIFF and text; Print (Acrobat's sizing, n-up, booklet, poster, comments & forms, preview, CUPS spooler, print-ready PDF). Done since: embedded/72/custom DPI choices for image imports; export all images; OCR (searchable image for pages, ranges and multiple files); single-sided cut-and-stack imposition with cut marks, through Print and doc_print; Create PDF from multiple files (PDFs, images and text, edited as pages in the grid). Missing: OCR languages beyond Latin, editable-text OCR output, Office export/import, Windows/web printing |
 | M11 | Optimize, preflight, PDF/A/X/UA, print production | 200–350 | 18% | 165–290 | Done: new `optimize` crate: Reduce File Size and the PDF Optimizer (images measured where drawn, bicubic downsampling, JPEG/ZIP recompression only when smaller, discard objects and user data, Flate clean-up, resource merging, object streams). Missing: fonts and transparency panels, space audit, preflight, PDF/A/X/UA |
-| M12 | Accessibility, compare, measure, search, XFA | 200–380 | 23% | 155–295 | Done: new `a11y` crate with the Accessibility Checker (all 32 rules, report, Fix/Skip/Explain, options dialog and results panel, agent tools). Done since: 2D distance, perimeter and area measurements with persistent viewport calibration, snapping, live information and CSV export. Missing: autotag, Tags/Order/Content panels, Reading Order tool, alt-text workflow, compare, geospatial/3D measurement, search index, XFA |
+| M12 | Accessibility, compare, measure, search, XFA | 200–380 | 23% | 155–295 | Done: new `a11y` crate with the Accessibility Checker (all 32 rules, report, Fix/Skip/Explain, options dialog and results panel, agent tools). Done since: 2D distance, perimeter and area measurements with persistent viewport calibration, snapping, live information and CSV export. Added: native editable Tags tree, properties, role mappings, multi-tag/content moves and conservative marked-content artifact conversion (documented limits). Missing: autotag, Order/Content panels, Reading Order tool, full artifact/untagged-content workflows, compare, geospatial/3D measurement, search index, XFA |
 | M13 | Automation (MCP, Action Wizard, CLI) + AI providers | 60–120 | 45% | 33–66 | Done: MCP resources (document info, text, page images); headless tool table (123 tools incl. signing, optimizing, initial view, links, stamps, data exchange, comment review, forms authoring and scripts, redaction, sanitize, print, add content), opt-in MCP server over stdio, CLI `run`/`tools` (closed stdout pipes exit cleanly), UI control channel with drag. Missing: Action Wizard, AI providers |
 | M14 | 1.0 polish: performance, localization, installers | 120–250 | 5% | 115–240 | Done: PhotoCraft's translation system (`i18n/`: TSV catalogs, `tl!`, command-id and plural entries, system-language detection, strict catalog tests); every dialog, panel and notice goes through `tl!`; Japanese, Traditional Chinese, Simplified Chinese, Russian, Spanish and French catalogs have ≈1,800 entries each; Simplified Chinese and French coverage is checked against the UI source; Czech and Brazilian Portuguese for menus. French locales (`fr`, `fr_FR`, `fr_CA`) follow the French catalog. Missing: more catalogs filled in, installers, performance budgets |
 | | **Total (original plan sizing)** | **2,085–3,840** | **≈ 35%** | **≈ 1,350–2,500 at the planned rate; ≈ 600–1,100 at the measured rate** | |
@@ -251,3 +251,5 @@ Newest first. One line per session: the date, what moved, and the new overall pe
   - Robustness sweep (963 of 983 files open, 0 crashes), text layer, find and select, tiles, web build, polish.
   - Overall ≈ 3–4%.
 - **2026-09-30 (session 1):** planning complete; viewer vertical slice.
+
+- **2026-10-09 (fork):** Added an editable accessibility tree with mixed content leaves, keyboard and multi-selection, renderer-backed selection bounds and reverse lookup, buffered properties including IDs/expansion, role mappings, transactional tag/content moves and exact marked-content artifact conversion. Unsupported associations are refused atomically; automatic tagging, arbitrary unmarked content tagging, namespace/class-map editing and full artifact parity remain open. Coverage and limits: `docs/accessibility/tag-editor.md`. Overall effort estimate unchanged.

@@ -35,6 +35,25 @@ fn fixture(n: usize) -> Vec<u8> {
     out
 }
 
+/// Add a genuine xref to an ASCII synthetic fixture, keeping nonzero generations.
+fn fixture_with_xref(source: &str, references: &[(u32, u16)]) -> Vec<u8> {
+    let body = source.split("trailer").next().unwrap();
+    let mut bytes = body.as_bytes().to_vec();
+    let start = bytes.len();
+    let size = references.iter().map(|(n, _)| *n).max().unwrap() + 1;
+    bytes.extend_from_slice(format!("xref\n0 {size}\n0000000000 65535 f \n").as_bytes());
+    for number in 1..size {
+        if let Some((_, generation)) = references.iter().find(|(n, _)| *n == number) {
+            let offset = body.find(&format!("{number} {generation} obj")).unwrap();
+            bytes.extend_from_slice(format!("{offset:010} {generation:05} n \n").as_bytes());
+        } else {
+            bytes.extend_from_slice(b"0000000000 00000 f \n");
+        }
+    }
+    bytes.extend_from_slice(format!("trailer\n<< /Size {size} /Root 1 0 R >>\nstartxref\n{start}\n%%EOF\n").as_bytes());
+    bytes
+}
+
 /// A fresh directory with `a.pdf` (3 pages) and `b.pdf` (2 pages).
 fn workdir(test: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("pdfcraft-automation-{test}-{}", std::process::id()));
@@ -1221,7 +1240,7 @@ fn accessibility_check_report_and_fixes_through_tools() {
 1 0 obj << /Type /Catalog /Pages 2 0 R /MarkInfo << /Marked true >> /StructTreeRoot 5 0 R >> endobj
 2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj
 3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R /StructParents 0 >> endobj
-4 0 obj << /Length 74 >> stream
+4 0 obj << /Length 96 >> stream
 /Figure << /MCID 0 >> BDC 10 150 40 20 re f EMC /Figure << /MCID 1 >> BDC 100 100 50 30 re f EMC
 endstream endobj
 5 0 obj << /Type /StructTreeRoot /K 6 0 R /ParentTree 9 0 R >> endobj
@@ -2922,4 +2941,446 @@ mod combine_argument_tests {
             assert_eq!(std::fs::read(dir.0.join("b.pdf")).unwrap(), second);
         }
     }
+}
+
+#[test]
+fn tag_tools_create_update_move_delete_undo_and_save() {
+    let dir = workdir("tag-editing");
+    let mut a = auto(&dir);
+    let doc = ok(&mut a, "doc_open", json!({"path":"a.pdf"}))["doc"].clone();
+    let blank = ok(&mut a, "accessibility_tags", json!({"doc":doc}));
+    assert_eq!(blank["tree"]["elements"], json!([]));
+    assert_eq!(blank["document"]["dirty"], false);
+    let root = ok(&mut a, "accessibility_tag_create", json!({"doc":doc,"role":"Document","position":1}))["created"].clone();
+    let child = ok(
+        &mut a,
+        "accessibility_tag_create",
+        json!({"doc":doc,"parent":root,"role":"P","position":1,"title":"Résumé 日本語","alt":"Original"}),
+    )["created"]
+        .clone();
+    assert!(child["number"].as_u64().unwrap() > 0);
+    assert_eq!(child["generation"], 0);
+    let updated = ok(
+        &mut a,
+        "accessibility_tag_update",
+        json!({"doc":doc,"id":child,"role":"H1","alt":null,"lang":"en-US","actual_text":"Hello","expansion":"Expanded"}),
+    );
+    assert_eq!(updated["tree"]["elements"][1]["title"], "Résumé 日本語");
+    assert_eq!(updated["tree"]["elements"][1]["alt"], Value::Null);
+    assert_eq!(updated["tree"]["elements"][1]["role"], "H1");
+    let moved = ok(&mut a, "accessibility_tag_move", json!({"doc":doc,"id":child,"position":1}));
+    assert_eq!(moved["tree"]["children"][0]["id"], child);
+    assert_eq!(moved["tree"]["elements"][0]["parent"], Value::Null);
+    ok(&mut a, "edit_undo", json!({"doc":doc}));
+    ok(&mut a, "edit_redo", json!({"doc":doc}));
+    ok(&mut a, "accessibility_tag_move", json!({"doc":doc,"id":child,"parent":root,"position":1}));
+    let unwrapped = ok(&mut a, "accessibility_tag_delete", json!({"doc":doc,"id":root,"mode":"unwrap"}));
+    assert_eq!(unwrapped["tree"]["elements"].as_array().unwrap().len(), 1);
+    assert_eq!(unwrapped["tree"]["children"][0]["id"], child);
+    ok(&mut a, "edit_undo", json!({"doc":doc}));
+    ok(&mut a, "doc_save", json!({"doc":doc,"path":"tagged.pdf","full":false}));
+    let reopened = ok(&mut a, "doc_open", json!({"path":"tagged.pdf"}))["doc"].clone();
+    let tree = ok(&mut a, "accessibility_tags", json!({"doc":reopened}));
+    assert_eq!(tree["tree"], updated["tree"]);
+    let deleted = ok(&mut a, "accessibility_tag_delete", json!({"doc":reopened,"id":root,"mode":"subtree"}));
+    assert_eq!(deleted["tree"]["elements"], json!([]));
+    assert_eq!(page_text(&mut a, reopened.as_u64().unwrap()), vec!["Page 1", "Page 2", "Page 3"]);
+    ok(&mut a, "edit_undo", json!({"doc":reopened}));
+    assert_eq!(ok(&mut a, "accessibility_tags", json!({"doc":reopened}))["tree"], tree["tree"]);
+    // Full rewrites may renumber PDF objects. Re-inspect identities before further edits.
+    ok(&mut a, "doc_save", json!({"doc":reopened,"path":"tagged-full.pdf","full":true}));
+    let full_doc = ok(&mut a, "doc_open", json!({"path":"tagged-full.pdf"}))["doc"].clone();
+    let full_tree = ok(&mut a, "accessibility_tags", json!({"doc":full_doc}));
+    assert_eq!(full_tree["tree"]["issues"], json!([]));
+    assert_eq!(full_tree["tree"]["elements"][1]["role"], "H1");
+    assert_eq!(full_tree["tree"]["elements"][1]["title"], "Résumé 日本語");
+    assert_eq!(full_tree["tree"]["elements"][1]["actual_text"], "Hello");
+    let full_child = full_tree["tree"]["elements"][1]["id"].clone();
+    ok(&mut a, "accessibility_tag_update", json!({"doc":full_doc,"id":full_child,"title":"After full save"}));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn tag_tools_reject_bad_arguments_and_fail_atomically() {
+    let dir = workdir("tag-validation");
+    let mut a = auto(&dir);
+    let doc = ok(&mut a, "doc_open", json!({"path":"a.pdf"}))["doc"].clone();
+    let root = ok(&mut a, "accessibility_tag_create", json!({"doc":doc,"role":"Document","position":1}))["created"].clone();
+    let before = ok(&mut a, "accessibility_tags", json!({"doc":doc}));
+    for args in [
+        json!({"doc":doc,"id":{"number":root["number"]},"title":"x"}),
+        json!({"doc":doc,"id":{"number":root["number"],"generation":0,"extra":1}}),
+        json!({"doc":doc,"id":{"number":0,"generation":0}}),
+        json!({"doc":doc,"id":{"number":root["number"],"generation":65536}}),
+        json!({"doc":doc,"id":root,"lang":false}),
+        json!({"doc":doc,"id":root,"role":null}),
+        json!({"doc":doc,"id":root,"titel":"typo"}),
+    ] {
+        assert!(matches!(a.call("accessibility_tag_update", &args), Err(ToolError::InvalidArgs(_))), "{args}");
+    }
+    for args in [
+        json!({"doc":doc,"role":"P","position":0}),
+        json!({"doc":doc,"role":"P","position":1.5}),
+        json!({"doc":doc,"role":"P","position":1,"parent":null}),
+    ] {
+        assert!(matches!(a.call("accessibility_tag_create", &args), Err(ToolError::InvalidArgs(_))));
+    }
+    assert!(a.call("accessibility_tag_move", &json!({"doc":doc,"id":root,"parent":root,"position":1})).is_err());
+    assert!(a.call("accessibility_tag_update", &json!({"doc":doc,"id":{"number":root["number"],"generation":1},"title":"stale"})).is_err());
+    assert!(a.call("accessibility_tag_create", &json!({"doc":doc,"role":"P","position":999})).is_err());
+    assert_eq!(ok(&mut a, "accessibility_tags", json!({"doc":doc})), before);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn tag_tool_schemas_require_complete_identities_and_explicit_deletion() {
+    for name in ["accessibility_tags", "accessibility_tag_create", "accessibility_tag_update", "accessibility_tag_move", "accessibility_tag_delete"] {
+        let tool = tools().into_iter().find(|t| t.name == name).unwrap();
+        assert_eq!(tool.read_only, name == "accessibility_tags");
+        assert_eq!(tool.destructive, name == "accessibility_tag_delete");
+        assert_eq!(tool.input_schema["additionalProperties"], false);
+        if name != "accessibility_tags" && name != "accessibility_tag_create" {
+            assert_eq!(tool.input_schema["properties"]["id"]["required"], json!(["number", "generation"]));
+            assert_eq!(tool.input_schema["properties"]["id"]["additionalProperties"], false);
+        }
+    }
+}
+
+#[test]
+fn tag_tools_keep_mixed_content_order_and_nonzero_generations() {
+    let dir = workdir("tag-mixed");
+    std::fs::write(
+        dir.join("mixed.pdf"),
+        fixture_with_xref(
+            "%PDF-1.7
+1 0 obj << /Type /Catalog /Pages 2 0 R /StructTreeRoot 5 0 R >> endobj
+2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj
+3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /StructParents 0 >> endobj
+5 0 obj << /Type /StructTreeRoot /K 6 2 R /ParentTree 9 0 R /RoleMap << /Custom /P >> >> endobj
+6 2 obj << /Type /StructElem /S /Document /P 5 0 R /Pg 3 0 R /K [0 7 3 R << /Type /MCR /MCID 1 /Pg 3 0 R >>] >> endobj
+7 3 obj << /Type /StructElem /S /Custom /P 6 2 R /K [] >> endobj
+9 0 obj << /Nums [0 [6 2 R 6 2 R]] >> endobj
+trailer << /Root 1 0 R >>
+%%EOF",
+            &[(1, 0), (2, 0), (3, 0), (5, 0), (6, 2), (7, 3), (9, 0)],
+        ),
+    )
+    .unwrap();
+    let mut a = auto(&dir);
+    let doc = ok(&mut a, "doc_open", json!({"path":"mixed.pdf"}))["doc"].clone();
+    let before = ok(&mut a, "accessibility_tags", json!({"doc":doc}));
+    assert_eq!(before["tree"]["issues"], json!([]));
+    assert_eq!(before["tree"]["elements"][1]["standard_role"], "P");
+    assert_eq!(before["tree"]["elements"][1]["page"], 1);
+    let parent = json!({"number":6,"generation":2});
+    let child = json!({"number":7,"generation":3});
+    let inserted = ok(&mut a, "accessibility_tag_create", json!({"doc":doc,"parent":parent,"position":2,"role":"Span"}));
+    let kids = &inserted["tree"]["elements"][0]["kids"];
+    assert_eq!(kids[0]["kind"], "mcid");
+    assert_eq!(kids[1]["id"], inserted["created"]);
+    assert_eq!(kids[2]["id"], child);
+    assert_eq!(kids[3]["kind"], "mcr");
+    let moved = ok(&mut a, "accessibility_tag_move", json!({"doc":doc,"id":child,"parent":parent,"position":1}));
+    assert_eq!(moved["tree"]["elements"][0]["kids"][0]["id"], child);
+    assert_eq!(moved["tree"]["elements"][0]["kids"][1]["kind"], "mcid");
+    assert!(a.call("accessibility_tag_delete", &json!({"doc":doc,"id":parent,"mode":"unwrap"})).is_err());
+    assert_eq!(ok(&mut a, "accessibility_tags", json!({"doc":doc}))["tree"], moved["tree"]);
+    ok(&mut a, "doc_save", json!({"doc":doc,"path":"mixed-saved.pdf","full":false}));
+    let reopened = ok(&mut a, "doc_open", json!({"path":"mixed-saved.pdf"}))["doc"].clone();
+    assert_eq!(ok(&mut a, "accessibility_tags", json!({"doc":reopened}))["tree"], moved["tree"]);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn tag_tools_report_malformed_trees_and_refuse_mutation() {
+    let dir = workdir("tag-malformed");
+    std::fs::write(
+        dir.join("cycle.pdf"),
+        b"%PDF-1.7
+1 0 obj << /Type /Catalog /Pages 2 0 R /StructTreeRoot 5 0 R >> endobj
+2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj
+3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] >> endobj
+5 0 obj << /Type /StructTreeRoot /K 6 0 R >> endobj
+6 0 obj << /Type /StructElem /S /Document /P 5 0 R /K [6 0 R] >> endobj
+trailer << /Root 1 0 R >>
+%%EOF",
+    )
+    .unwrap();
+    let mut a = auto(&dir);
+    let doc = ok(&mut a, "doc_open", json!({"path":"cycle.pdf"}))["doc"].clone();
+    let before = ok(&mut a, "accessibility_tags", json!({"doc":doc}));
+    assert!(!before["tree"]["issues"].as_array().unwrap().is_empty());
+    assert!(a.call("accessibility_tag_update", &json!({"doc":doc,"id":{"number":6,"generation":0},"title":"unsafe"})).is_err());
+    assert_eq!(ok(&mut a, "accessibility_tags", json!({"doc":doc})), before);
+    assert_eq!(before["document"]["dirty"], false);
+    let tag = json!({"number":6,"generation":0});
+    for (name, args) in [
+        ("accessibility_role_map_set", json!({"doc":doc,"role":"Custom","target":"P"})),
+        ("accessibility_tag_content_move", json!({"doc":doc,"source":tag,"source_position":1,"destination":tag,"position":1})),
+        ("accessibility_tags_move", json!({"doc":doc,"ids":[tag],"position":1})),
+        ("accessibility_tags_delete", json!({"doc":doc,"ids":[tag],"mode":"subtree"})),
+        ("accessibility_tag_identifier_set", json!({"doc":doc,"id":tag,"identifier":"id"})),
+        ("accessibility_tag_artifact", json!({"doc":doc,"id":tag,"include_descendants":true})),
+    ] {
+        assert!(a.call(name, &args).is_err(), "{name}");
+        assert_eq!(ok(&mut a, "accessibility_tags", json!({"doc":doc})), before);
+    }
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn tag_content_tool_returns_geometry_by_mcid_without_mutation() {
+    let dir = workdir("tag-geometry");
+    let stream = "/P << /MCID 0 >> BDC 10 30 40 20 re f EMC";
+    let pdf = format!(
+        "%PDF-1.7\n1 0 obj << /Type /Catalog /Pages 2 0 R /StructTreeRoot 5 0 R >> endobj\n2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj\n3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R /StructParents 0 >> endobj\n4 0 obj << /Length {} >> stream\n{stream}\nendstream endobj\n5 0 obj << /Type /StructTreeRoot /K 6 0 R /ParentTree 7 0 R >> endobj\n6 0 obj << /Type /StructElem /S /P /P 5 0 R /Pg 3 0 R /K 0 >> endobj\n7 0 obj << /Nums [0 [6 0 R]] >> endobj\ntrailer << /Root 1 0 R >>\n%%EOF",
+        stream.len()
+    );
+    std::fs::write(dir.join("geometry.pdf"), pdf).unwrap();
+    let mut a = auto(&dir);
+    let doc = ok(&mut a, "doc_open", json!({"path":"geometry.pdf"}))["doc"].clone();
+    let before = ok(&mut a, "accessibility_tags", json!({"doc":doc}));
+    let content = ok(&mut a, "accessibility_tag_content", json!({"doc":doc,"page":1}));
+    assert_eq!(content["page_object"], json!({"number":3,"generation":0}));
+    let item = content["items"].as_array().unwrap().iter().find(|i| i["mcid"] == 0).unwrap();
+    assert_eq!(item["stream"], Value::Null);
+    assert_eq!(item["regions"], json!([[10.0, 150.0, 50.0, 170.0]]));
+    let found = ok(&mut a, "accessibility_tags_find", json!({"doc":doc,"page":1,"regions":[[20.0,160.0,20.0,160.0]]}));
+    assert_eq!(found["ids"], json!([{ "number":6, "generation":0 }]));
+    let none = ok(&mut a, "accessibility_tags_find", json!({"doc":doc,"page":1,"regions":[[100.0,100.0,101.0,101.0]]}));
+    assert_eq!(none["ids"], json!([]));
+    for regions in [json!([]), json!([[10, 10, 0, 0]]), json!([[0, 0, 1]]), json!([[0, 0, "x", 1]])] {
+        assert!(matches!(a.call("accessibility_tags_find", &json!({"doc":doc,"page":1,"regions":regions})), Err(ToolError::InvalidArgs(_))));
+    }
+    assert!(a.call("accessibility_tag_content", &json!({"doc":doc,"page":0})).is_err());
+    assert!(a.call("accessibility_tag_content", &json!({"doc":doc,"page":2})).is_err());
+    assert_eq!(ok(&mut a, "accessibility_tags", json!({"doc":doc})), before);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn tag_role_map_and_batch_tools_roundtrip_undo_and_reject_invalid_edits() {
+    let dir = workdir("tag-role-batch");
+    let mut a = auto(&dir);
+    let doc = ok(&mut a, "doc_open", json!({"path":"a.pdf"}))["doc"].clone();
+    let root = ok(&mut a, "accessibility_tag_create", json!({"doc":doc,"role":"Document","position":1}))["created"].clone();
+    ok(&mut a, "accessibility_role_map_set", json!({"doc":doc,"role":"Custom","target":"P"}));
+    let first = ok(&mut a, "accessibility_tag_create", json!({"doc":doc,"role":"Custom","parent":root,"position":1}))["created"].clone();
+    let second = ok(&mut a, "accessibility_tag_create", json!({"doc":doc,"role":"H1","parent":root,"position":2}))["created"].clone();
+    let before = ok(&mut a, "accessibility_tags", json!({"doc":doc}));
+    for args in [
+        json!({"doc":doc,"role":"Custom","target":null}),
+        json!({"doc":doc,"role":"Custom","target":"Custom"}),
+        json!({"doc":doc,"role":"P","target":"H1"}),
+        json!({"doc":doc,"role":"Custom","target":12}),
+    ] {
+        assert!(a.call("accessibility_role_map_set", &args).is_err());
+        assert_eq!(ok(&mut a, "accessibility_tags", json!({"doc":doc}))["tree"], before["tree"]);
+    }
+    let moved = ok(&mut a, "accessibility_tags_move", json!({"doc":doc,"ids":[second,first],"position":2}));
+    assert_eq!(moved["tree"]["elements"][1]["id"], first);
+    assert_eq!(moved["tree"]["elements"][2]["id"], second);
+    ok(&mut a, "edit_undo", json!({"doc":doc}));
+    assert_eq!(ok(&mut a, "accessibility_tags", json!({"doc":doc}))["tree"], before["tree"]);
+    ok(&mut a, "edit_redo", json!({"doc":doc}));
+    assert!(a.call("accessibility_tags_move", &json!({"doc":doc,"ids":[first,second],"parent":first,"position":1})).is_err());
+    ok(&mut a, "accessibility_tags_delete", json!({"doc":doc,"ids":[first,second],"mode":"subtree"}));
+    ok(&mut a, "edit_undo", json!({"doc":doc}));
+    ok(&mut a, "doc_save", json!({"doc":doc,"path":"batch.pdf","full":false}));
+    let reopened = ok(&mut a, "doc_open", json!({"path":"batch.pdf"}))["doc"].clone();
+    assert_eq!(ok(&mut a, "accessibility_tags", json!({"doc":reopened}))["tree"], moved["tree"]);
+    ok(&mut a, "accessibility_role_map_set", json!({"doc":doc,"role":"Unused","target":"Span"}));
+    let removed = ok(&mut a, "accessibility_role_map_set", json!({"doc":doc,"role":"Unused","target":null}));
+    assert_eq!(removed["tree"]["role_map"], json!({"Custom":"P"}));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn tag_content_move_tool_preserves_exact_namespace_and_history() {
+    let dir = workdir("tag-move-content");
+    std::fs::write(
+        dir.join("content.pdf"),
+        fixture_with_xref(
+            "%PDF-1.7
+1 0 obj << /Type /Catalog /Pages 2 0 R /StructTreeRoot 5 0 R >> endobj
+2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj
+3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /StructParents 0 >> endobj
+5 0 obj << /Type /StructTreeRoot /K [6 2 R 7 3 R] /ParentTree 9 0 R >> endobj
+6 2 obj << /Type /StructElem /S /P /P 5 0 R /Pg 3 0 R /K [0 10 2 R 12 4 R] >> endobj
+7 3 obj << /Type /StructElem /S /P /P 5 0 R >> endobj
+9 0 obj << /Nums [0 [6 2 R] 1 [6 2 R] 2 6 2 R] >> endobj
+10 2 obj << /Type /MCR /Stm 11 0 R /MCID 0 /Private 77 >> endobj
+11 0 obj << /Type /XObject /Subtype /Form /BBox [0 0 20 20] /StructParents 1 /Length 3 >> stream
+q Q
+endstream endobj
+12 4 obj << /Type /OBJR /Obj 13 0 R >> endobj
+13 0 obj << /Type /Annot /Subtype /Text /Rect [0 0 10 10] /StructParent 2 >> endobj
+trailer << /Root 1 0 R >>
+%%EOF",
+            &[(1, 0), (2, 0), (3, 0), (5, 0), (6, 2), (7, 3), (9, 0), (10, 2), (11, 0), (12, 4), (13, 0)],
+        ),
+    )
+    .unwrap();
+    let mut a = auto(&dir);
+    let doc = ok(&mut a, "doc_open", json!({"path":"content.pdf"}))["doc"].clone();
+    let source = json!({"number":6,"generation":2});
+    let destination = json!({"number":7,"generation":3});
+    let before = ok(&mut a, "accessibility_tags", json!({"doc":doc}));
+    assert_eq!(before["tree"]["issues"], json!([]));
+    for position in 1..=3 {
+        let moved = ok(
+            &mut a,
+            "accessibility_tag_content_move",
+            json!({"doc":doc,"source":source,"source_position":1,"destination":destination,"position":position}),
+        );
+        assert_eq!(moved["tree"]["issues"], json!([]));
+    }
+    let moved = ok(&mut a, "accessibility_tags", json!({"doc":doc}));
+    let kids = &moved["tree"]["elements"][1]["kids"];
+    assert_eq!(kids[0]["page_object"], json!({"number":3,"generation":0}));
+    assert_eq!(kids[1]["stream"], json!({"number":11,"generation":0}));
+    assert_eq!(kids[2]["object"], json!({"number":13,"generation":0}));
+    assert!(
+        a.call("accessibility_tag_content_move", &json!({"doc":doc,"source":destination,"source_position":1,"destination":source,"position":999}))
+            .is_err()
+    );
+    assert_eq!(ok(&mut a, "accessibility_tags", json!({"doc":doc}))["tree"], moved["tree"]);
+    ok(&mut a, "edit_undo", json!({"doc":doc}));
+    ok(&mut a, "edit_redo", json!({"doc":doc}));
+    ok(&mut a, "doc_save", json!({"doc":doc,"path":"moved.pdf","full":false}));
+    let reopened = ok(&mut a, "doc_open", json!({"path":"moved.pdf"}))["doc"].clone();
+    assert_eq!(ok(&mut a, "accessibility_tags", json!({"doc":reopened}))["tree"], moved["tree"]);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn tag_identifier_tool_updates_name_tree_and_history() {
+    let dir = workdir("tag-identifiers");
+    let mut a = auto(&dir);
+    let doc = ok(&mut a, "doc_open", json!({"path":"a.pdf"}))["doc"].clone();
+    let root = ok(&mut a, "accessibility_tag_create", json!({"doc":doc,"role":"Document","position":1}))["created"].clone();
+    let child = ok(&mut a, "accessibility_tag_create", json!({"doc":doc,"role":"P","parent":root,"position":1}))["created"].clone();
+    ok(&mut a, "accessibility_tag_identifier_set", json!({"doc":doc,"id":root,"identifier":"document-id"}));
+    assert!(a.call("accessibility_tag_identifier_set", &json!({"doc":doc,"id":child})).is_err());
+    let tagged = ok(&mut a, "accessibility_tag_identifier_set", json!({"doc":doc,"id":child,"identifier":"日本語"}));
+    assert_eq!(tagged["tree"]["elements"][1]["identifier"], "日本語");
+    assert!(a.call("accessibility_tag_identifier_set", &json!({"doc":doc,"id":child,"identifier":"document-id"})).is_err());
+    assert_eq!(ok(&mut a, "accessibility_tags", json!({"doc":doc}))["tree"], tagged["tree"]);
+    ok(&mut a, "edit_undo", json!({"doc":doc}));
+    ok(&mut a, "edit_redo", json!({"doc":doc}));
+    ok(&mut a, "doc_save", json!({"doc":doc,"path":"ids.pdf","full":false}));
+    let reopened = ok(&mut a, "doc_open", json!({"path":"ids.pdf"}))["doc"].clone();
+    assert_eq!(ok(&mut a, "accessibility_tags", json!({"doc":reopened}))["tree"], tagged["tree"]);
+    let cleared = ok(&mut a, "accessibility_tag_identifier_set", json!({"doc":reopened,"id":child,"identifier":null}));
+    assert_eq!(cleared["tree"]["elements"][1]["identifier"], Value::Null);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn tag_artifact_tool_keeps_pixels_and_roundtrips_history() {
+    let dir = workdir("tag-artifact");
+    let content = "/P <</MCID 0>> BDC q 1 0 0 rg 20 20 70 80 re f Q EMC";
+    let pdf = format!(
+        "%PDF-1.7
+1 0 obj << /Type /Catalog /Pages 2 0 R /StructTreeRoot 5 0 R >> endobj
+2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj
+3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /StructParents 0 /Contents 4 0 R >> endobj
+4 0 obj << /Length {} >> stream
+{}
+endstream endobj
+5 0 obj << /Type /StructTreeRoot /K 6 2 R /ParentTree 9 0 R >> endobj
+6 2 obj << /Type /StructElem /S /P /P 5 0 R /Pg 3 0 R /K 0 >> endobj
+9 0 obj << /Nums [0 [6 2 R]] >> endobj
+trailer << /Root 1 0 R >>
+%%EOF",
+        content.len(),
+        content
+    );
+    std::fs::write(dir.join("artifact.pdf"), fixture_with_xref(&pdf, &[(1, 0), (2, 0), (3, 0), (4, 0), (5, 0), (6, 2), (9, 0)])).unwrap();
+    let mut a = auto(&dir);
+    let doc = ok(&mut a, "doc_open", json!({"path":"artifact.pdf"}))["doc"].clone();
+    let png = |a: &mut Automation, doc: &Value| {
+        let result = a.call("page_render", &json!({"doc":doc,"page":1,"dpi":72})).unwrap();
+        let Content::Png { data, .. } = &result[0] else { panic!("expected PNG") };
+        data.clone()
+    };
+    let before_pixels = png(&mut a, &doc);
+    let before = ok(&mut a, "accessibility_tags", json!({"doc":doc}));
+    assert!(a.call("accessibility_tag_artifact", &json!({"doc":doc,"id":{"number":6,"generation":0},"include_descendants":false})).is_err());
+    let result = ok(&mut a, "accessibility_tag_artifact", json!({"doc":doc,"id":{"number":6,"generation":2},"include_descendants":false}));
+    assert_eq!(result["tree"]["elements"], json!([]));
+    assert_eq!(png(&mut a, &doc), before_pixels);
+    ok(&mut a, "edit_undo", json!({"doc":doc}));
+    assert_eq!(ok(&mut a, "accessibility_tags", json!({"doc":doc}))["tree"], before["tree"]);
+    ok(&mut a, "edit_redo", json!({"doc":doc}));
+    assert_eq!(png(&mut a, &doc), before_pixels);
+    ok(&mut a, "doc_save", json!({"doc":doc,"path":"converted.pdf","full":false}));
+    let reopened = ok(&mut a, "doc_open", json!({"path":"converted.pdf"}))["doc"].clone();
+    assert_eq!(png(&mut a, &reopened), before_pixels);
+    assert_eq!(ok(&mut a, "accessibility_tags", json!({"doc":reopened}))["tree"], result["tree"]);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn legacy_decorative_tool_preserves_nested_associations_and_refuses_idtree() {
+    let dir = workdir("legacy-decorative-exact");
+    let content = "/Figure <</MCID 0>> BDC q 70 0 0 80 20 20 cm /Im Do Q EMC";
+    let pdf = format!(
+        "%PDF-1.7
+1 0 obj << /Type /Catalog /Pages 2 0 R /StructTreeRoot 5 0 R >> endobj
+2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj
+3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R /StructParents 0 /Resources << /XObject << /Im 10 0 R >> >> >> endobj
+4 0 obj << /Length {} >> stream
+{}
+endstream endobj
+5 0 obj << /Type /StructTreeRoot /K 6 2 R /ParentTree 9 0 R >> endobj
+6 2 obj << /Type /StructElem /S /Figure /Pg 3 0 R /P 5 0 R /K 0 >> endobj
+9 0 obj << /Kids [11 0 R] >> endobj
+10 0 obj << /Type /XObject /Subtype /Image /Width 1 /Height 1 /BitsPerComponent 8 /ColorSpace /DeviceGray /Length 1 >> stream
+F
+endstream endobj
+11 0 obj << /Nums 12 0 R /Limits [0 0] /Private 73 >> endobj
+12 0 obj [0 13 0 R] endobj
+13 0 obj [6 2 R] endobj
+trailer << /Root 1 0 R >>
+%%EOF",
+        content.len(),
+        content
+    );
+    std::fs::write(
+        dir.join("figure.pdf"),
+        fixture_with_xref(&pdf, &[(1, 0), (2, 0), (3, 0), (4, 0), (5, 0), (6, 2), (9, 0), (10, 0), (11, 0), (12, 0), (13, 0)]),
+    )
+    .unwrap();
+    let mut a = auto(&dir);
+    let doc = ok(&mut a, "doc_open", json!({"path":"figure.pdf"}))["doc"].clone();
+    let png = |a: &mut Automation, doc: &Value| {
+        let result = a.call("page_render", &json!({"doc":doc,"page":1,"dpi":72})).unwrap();
+        let Content::Png { data, .. } = &result[0] else { panic!("expected image") };
+        data.clone()
+    };
+    let pixels = png(&mut a, &doc);
+    let before = ok(&mut a, "accessibility_tags", json!({"doc":doc}));
+    assert_eq!(before["tree"]["issues"], json!([]));
+    let converted = ok(&mut a, "accessibility_set_alt", json!({"doc":doc,"figure":6,"decorative":true}));
+    assert_eq!(converted["count"], 0);
+    assert_eq!(png(&mut a, &doc), pixels);
+    let tree = ok(&mut a, "accessibility_tags", json!({"doc":doc}));
+    assert_eq!(tree["tree"]["issues"], json!([]));
+    assert_eq!(tree["tree"]["elements"], json!([]));
+    ok(&mut a, "doc_save", json!({"doc":doc,"path":"decorative.pdf","full":false}));
+    let reopened = ok(&mut a, "doc_open", json!({"path":"decorative.pdf"}))["doc"].clone();
+    assert_eq!(png(&mut a, &reopened), pixels);
+    assert_eq!(ok(&mut a, "accessibility_tags", json!({"doc":reopened}))["tree"], tree["tree"]);
+    ok(&mut a, "edit_undo", json!({"doc":doc}));
+    assert_eq!(ok(&mut a, "accessibility_tags", json!({"doc":doc}))["tree"], before["tree"]);
+    ok(&mut a, "edit_redo", json!({"doc":doc}));
+    assert_eq!(png(&mut a, &doc), pixels);
+    ok(&mut a, "edit_undo", json!({"doc":doc}));
+    ok(&mut a, "accessibility_tag_identifier_set", json!({"doc":doc,"id":{"number":6,"generation":2},"identifier":"figure-id"}));
+    let protected = ok(&mut a, "accessibility_tags", json!({"doc":doc}));
+    assert!(a.call("accessibility_set_alt", &json!({"doc":doc,"figure":6,"decorative":true})).is_err());
+    assert_eq!(ok(&mut a, "accessibility_tags", json!({"doc":doc})), protected);
+    assert_eq!(png(&mut a, &doc), pixels);
+    let _ = std::fs::remove_dir_all(dir);
 }

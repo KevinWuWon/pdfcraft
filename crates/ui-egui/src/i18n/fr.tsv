@@ -2033,6 +2033,108 @@
 	Pinned {folder} to Home	{folder} épinglé à l'Accueil
 	No recent files	Aucun fichier récent
 	Go to page…	Aller à la page…
+
+# Accessibility tag editor and upstream attribution.
+	Edit document tags	Modifier les balises du document
+	Accessibility tags	Balises d’accessibilité
+	Ambiguous, reused or unsupported content is refused without changing the document.	Le contenu ambigu, réutilisé ou non pris en charge est refusé sans modifier le document.
+	Apply or cancel the property changes before selecting another tag.	Appliquez ou annulez les modifications des propriétés avant de sélectionner une autre balise.
+	Apply or cancel the property changes first.	Appliquez ou annulez d’abord les modifications des propriétés.
+	Apply properties	Appliquer les propriétés
 	Based on PdfCraft by the ArtCraft team.	Basé sur PdfCraft, créé par l’équipe ArtCraft.
+	Cancel properties	Annuler les modifications des propriétés
+	Changing an ID can break external links that use the old ID.	La modification d’un identifiant peut rompre les liens externes qui utilisent l’ancien identifiant.
+	Click page content to find its tag. Escape cancels.	Cliquez sur le contenu de la page pour trouver sa balise. Échap annule l’opération.
+	Collapse all tags	Réduire toutes les balises
+	Convert marked content	Convertir le contenu balisé
+	Convert to artifact:	Convertir en artéfact :
+	Convert to artifact…	Convertir en artéfact…
+	Creating a tag does not automatically associate page content.	La création d’une balise ne lui associe pas automatiquement le contenu de la page.
+	Delete subtree	Supprimer la sous-arborescence
+	Delete tag structure? Page artwork stays unchanged; it does not become an artifact.	Supprimer la structure des balises ? Le contenu visuel de la page reste inchangé ; il ne devient pas un artéfact.
+	Delete tag…	Supprimer la balise…
+	Edit role mappings…	Modifier les correspondances de rôles…
+	Expand all tags	Développer toutes les balises
+	Find tag from selection	Trouver la balise de la sélection
+	Find tags	Rechercher des balises
+	Go to page	Aller à la page
+	Highlight content	Mettre le contenu en surbrillance
+	Keep tag	Conserver la balise
+	Keep tagged content	Conserver le contenu balisé
+	Language uses a language tag such as en-US. Empty text removes the property.	La langue utilise une balise linguistique telle que fr-FR. Laisser le champ vide supprime la propriété.
+	Mapped type:	Type correspondant :
+	Move content to…	Déplacer le contenu vers…
+	Move selected tags…	Déplacer les balises sélectionnées…
+	New child tag	Nouvelle balise enfant
+	New tag	Nouvelle balise
+	New tag after	Nouvelle balise après
+	No matching tags.	Aucune balise correspondante.
+	No supported painted content bounds for this tag on this page.	Aucune limite de contenu dessiné prise en charge pour cette balise sur cette page.
+	No tag with supported content bounds intersects this selection.	Aucune balise dont les limites de contenu sont prises en charge ne recoupe cette sélection.
+	Outlines show content selection bounds, not pixel-exact painted shapes.	Les contours indiquent les limites de sélection du contenu, et non la forme exacte de chaque pixel dessiné.
+	Properties	Propriétés
+	Reveal	Afficher
+	Select content on page	Sélectionner le contenu sur la page
+	Selected for deletion:	Sélection pour suppression :
+	Show content items	Afficher les éléments de contenu
+	Standard types	Types standard
+	Structure warnings	Avertissements de structure
+	Tag ID	Identifiant de la balise
+	Tag ID:	Identifiant de la balise :
+	Tag options	Options des balises
+	Tag properties	Propriétés de la balise
+	The document changed. Cancel to reload these properties.	Le document a été modifié. Annulez pour recharger ces propriétés.
+	The selected tags and descendants will be removed from the accessibility tree. Their marked content becomes decorative; page artwork stays visible.	Les balises sélectionnées et leurs descendants seront retirés de l’arbre d’accessibilité. Leur contenu balisé deviendra décoratif ; le contenu visuel de la page restera visible.
+	This document does not allow structure editing.	Ce document n’autorise pas la modification de sa structure.
+	This document has no accessibility tags.	Ce document ne contient aucune balise d’accessibilité.
+	Type, title or text	Type, titre ou texte
+	Unwrap tag	Retirer la balise en conservant ses enfants
 	Upstream Discord	Discord du projet d’origine
 	Upstream community	Communauté du projet d’origine
+	matching tags	balises correspondantes
+	tags selected	balises sélectionnées
+	Actual text	Texte de remplacement
+	Abbreviation expansion	Développement de l’abréviation
+	Edit role mappings	Modifier les correspondances de rôles
+	Map a custom tag role to a standard structure type. Each mapping affects every tag using that role in this document.	Associez un rôle de balise personnalisé à un type de structure standard. Chaque correspondance s’applique à toutes les balises utilisant ce rôle dans le document.
+	No role mappings yet.	Aucune correspondance de rôles pour le moment.
+	Custom role	Rôle personnalisé
+	For example: ChapterTitle	Par exemple : ChapterTitle
+	Maps to	Correspond à
+	For example: H1	Par exemple : H1
+	Standard type	Type standard
+	Choose a standard type…	Choisir un type standard…
+	{affected} tag(s) currently use this custom role.	Nombre de balises utilisant actuellement ce rôle personnalisé : {affected}.
+	The document changed while this dialog was open. Your draft is kept. Reopen the dialog to work with the current document.	Le document a été modifié pendant que cette boîte de dialogue était ouverte. Votre saisie est conservée. Rouvrez la boîte de dialogue pour travailler sur la version actuelle du document.
+	Could not apply: {error}	Impossible d’appliquer : {error}
+	Apply mapping	Appliquer la correspondance
+	Remove mapping	Supprimer la correspondance
+	Move to tag	Déplacer vers une balise
+	Move {count} selected tag(s), keeping their subtrees and content.	Déplacer les balises sélectionnées ({count}) en conservant leurs sous-arborescences et leur contenu.
+	Move content child {index} from tag {source}.	Déplacer l’élément de contenu enfant {index} depuis la balise {source}.
+	Find destination	Rechercher une destination
+	Find destination by role, title, or object reference	Rechercher une destination par rôle, titre ou référence d’objet
+	Structure tree root	Racine de l’arbre de structure
+	More destinations available. Refine your search.	D’autres destinations sont disponibles. Affinez votre recherche.
+	Unavailable tag {id}	Balise indisponible {id}
+	Choose a destination tag	Choisir une balise de destination
+	Destination: {destination_name}	Destination : {destination_name}
+	Position (1-based)	Position (à partir de 1)
+	Valid range: 1–{limit}	Plage valide : 1–{limit}
+	Positions count all siblings, including content leaves. The position is measured after the moving items are removed; the last position appends.	Les positions comptent tous les éléments de même niveau, y compris les feuilles de contenu. Elles sont calculées après le retrait des éléments à déplacer ; la dernière position ajoute les éléments à la fin.
+	The document changed. This move draft is kept, but reopen the dialog before applying so content positions and tag identities can be checked again.	Le document a été modifié. Votre déplacement est conservé en brouillon, mais rouvrez la boîte de dialogue avant de l’appliquer afin de vérifier à nouveau les positions du contenu et l’identité des balises.
+	The original selection is no longer available.	La sélection d’origine n’est plus disponible.
+	Choose a destination outside the moving subtrees. Content must belong to a tag.	Choisissez une destination en dehors des sous-arborescences à déplacer. Le contenu doit appartenir à une balise.
+	Could not move: {error}	Impossible de déplacer : {error}
+	Move	Déplacer
+	Edit tag properties	Modifier les propriétés de la balise
+	Convert selected tags to artifacts	Convertir les balises sélectionnées en artéfacts
+	Object {id}	Objet {id}
+	{count} tags	{count} balises
+	 + {count} tags	 + {count} balises
+	Move content up	Monter le contenu
+	Move content down	Descendre le contenu
+	Content · MCID {id}	Contenu · MCID {id}
+	Content · MCID {id} · stream	Contenu · MCID {id} · flux
+	Object reference · {object}	Référence d’objet · {object}
+	Unsupported · {description}	Non pris en charge · {description}

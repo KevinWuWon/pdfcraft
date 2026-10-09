@@ -431,6 +431,7 @@ pub fn right_panel(app: &mut PdfCraftApp, ui: &mut egui::Ui) {
                     RightPanel::Attachments => ("Attachments", Some(info.attachments.len())),
                     RightPanel::Signatures => ("Signatures", Some(doc.signatures.iter().filter(|s| s.signed).count())),
                     RightPanel::Accessibility => ("Accessibility Checker", None),
+                    RightPanel::Tags => ("Accessibility tags", None),
                     RightPanel::Search => ("Search", None),
                     RightPanel::Compare => ("Compare", compare.as_ref().filter(|c| c.new == id).map(|c| c.result.changes.len())),
                 };
@@ -486,108 +487,122 @@ pub fn right_panel(app: &mut PdfCraftApp, ui: &mut egui::Ui) {
                     });
                 });
                 ui.add_space(6.0);
-                egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| match panel {
-                    RightPanel::Comments => {
-                        if let Some(e) = crate::comments_panel::show(ui, &t, info, view, prefs, comment_allowed, &mut nav) {
-                            panel_edit = Some(e);
-                        }
-                    }
-                    RightPanel::Bookmarks => {
-                        if info.outline.is_empty() {
-                            empty(ui, &t, "bookmark", "This document has no bookmarks.");
-                        }
-                        let mut ctx = OutlineCtx {
-                            nav: &mut nav,
-                            action: &mut bm_action,
-                            rename: &mut bm_rename,
-                            editable: bm_editable,
-                            current: view.current,
-                            expand: bm_expand,
-                        };
-                        for (i, item) in info.outline.iter().enumerate() {
-                            outline_item(ui, &t, info, item, &[i], info.outline.len(), &mut ctx);
-                        }
-                    }
-                    RightPanel::Pages => pages(ui, &t, info, view, modal, &mut nav),
-                    RightPanel::Fields => fields(ui, &t, info, &doc.form, preparing, &mut nav, &mut panel_edit),
-                    RightPanel::Layers => {
-                        if info.layers.is_empty() {
-                            empty(ui, &t, "layers", "This document has no layers.");
-                        }
-                        for (li, l) in info.layers.iter().enumerate() {
-                            let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 32.0), Sense::click());
-                            resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Checkbox, true, l.visible, &l.name));
-                            if resp.hovered() {
-                                ui.painter().rect_filled(rect, CornerRadius::same(6), t.hover);
-                            }
-                            icons::paint(
-                                ui,
-                                Rect::from_min_size(rect.min + vec2(4.0, 7.0), vec2(18.0, 18.0)),
-                                if l.visible { "eye" } else { "eye-off" },
-                                16.0,
-                                t.icon,
-                            );
-                            let fg = if l.visible { t.text } else { t.text_faint };
-                            ui.painter().text(rect.left_center() + vec2(32.0, 0.0), Align2::LEFT_CENTER, &l.name, theme::regular(13.0), fg);
-                            if resp.on_hover_text(if l.visible { tl!("Hide layer") } else { tl!("Show layer") }).clicked() {
-                                toggle_layer = Some((li, !l.visible));
+                if panel == RightPanel::Tags {
+                    let selection = view.selected_text_regions();
+                    let context = crate::tags_ui::PanelContext { doc, modal, current_page: view.current, text_selection: selection };
+                    panel_edit = ui.push_id(("tags", id), |ui| crate::tags_ui::panel(ui, &t, &mut view.tags, context, &mut nav)).inner;
+                } else {
+                    egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| match panel {
+                        RightPanel::Comments => {
+                            if let Some(e) = crate::comments_panel::show(ui, &t, info, view, prefs, comment_allowed, &mut nav) {
+                                panel_edit = Some(e);
                             }
                         }
-                    }
-                    RightPanel::Signatures => {
-                        sig_action = crate::sign_ui::panel(ui, &t, &doc.signatures, sig_expanded);
-                    }
-                    RightPanel::Accessibility => {
-                        a11y_action = crate::a11y_ui::panel(ui, &t, a11y, id);
-                    }
-                    RightPanel::Search => crate::search_ui::panel(ui, &t, view, info.pages.len()),
-                    RightPanel::Compare => compare_action = crate::compare_ui::panel(ui, &t, compare, id),
-                    RightPanel::Attachments => {
-                        if info.attachments.is_empty() {
-                            empty(ui, &t, "paperclip", "This document has no attachments.");
+                        RightPanel::Bookmarks => {
+                            if info.outline.is_empty() {
+                                empty(ui, &t, "bookmark", "This document has no bookmarks.");
+                            }
+                            let mut ctx = OutlineCtx {
+                                nav: &mut nav,
+                                action: &mut bm_action,
+                                rename: &mut bm_rename,
+                                editable: bm_editable,
+                                current: view.current,
+                                expand: bm_expand,
+                            };
+                            for (i, item) in info.outline.iter().enumerate() {
+                                outline_item(ui, &t, info, item, &[i], info.outline.len(), &mut ctx);
+                            }
                         }
-                        for (ai, a) in info.attachments.iter().enumerate() {
-                            egui::Frame::NONE.inner_margin(egui::Margin::symmetric(4, 6)).show(ui, |ui| {
-                                ui.horizontal(|ui| {
-                                    ui.add(icons::image("paperclip", 16.0, t.icon));
-                                    ui.vertical(|ui| {
-                                        ui.set_width(ui.available_width() - 70.0);
-                                        ui.add(egui::Label::new(egui::RichText::new(&a.name).font(theme::medium(13.0))).truncate());
-                                        let mut meta = a.size.map(human_size).unwrap_or_default();
-                                        if let pdfcraft_render::AttachmentSource::Annotation { page, .. } = a.source {
-                                            let on_page = crate::i18n::fmt(
-                                                tl!("on page {label}"),
-                                                &[("label", info.pages.get(page).map(|p| p.label.as_str()).unwrap_or("?"))],
-                                            );
-                                            meta = format!("{meta}  ·  {on_page}");
-                                        }
-                                        if let Some(d) = &a.description {
-                                            meta = format!("{meta}  ·  {d}");
-                                        }
-                                        ui.add(egui::Label::new(egui::RichText::new(meta).color(t.text_faint).small()).truncate());
-                                    });
-                                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                        if icons::button(ui, "file-down", 28.0, false, tl!("Save attachment…")).clicked() {
-                                            attachment_action = Some((ai, false));
-                                        }
-                                        if a.name.to_lowercase().ends_with(".pdf")
-                                            && icons::button(ui, "file-input", 28.0, false, tl!("Open in a new tab")).clicked()
-                                        {
-                                            attachment_action = Some((ai, true));
-                                        }
+                        RightPanel::Pages => pages(ui, &t, info, view, modal, &mut nav),
+                        RightPanel::Fields => fields(ui, &t, info, &doc.form, preparing, &mut nav, &mut panel_edit),
+                        RightPanel::Layers => {
+                            if info.layers.is_empty() {
+                                empty(ui, &t, "layers", "This document has no layers.");
+                            }
+                            for (li, l) in info.layers.iter().enumerate() {
+                                let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 32.0), Sense::click());
+                                resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Checkbox, true, l.visible, &l.name));
+                                if resp.hovered() {
+                                    ui.painter().rect_filled(rect, CornerRadius::same(6), t.hover);
+                                }
+                                icons::paint(
+                                    ui,
+                                    Rect::from_min_size(rect.min + vec2(4.0, 7.0), vec2(18.0, 18.0)),
+                                    if l.visible { "eye" } else { "eye-off" },
+                                    16.0,
+                                    t.icon,
+                                );
+                                let fg = if l.visible { t.text } else { t.text_faint };
+                                ui.painter().text(rect.left_center() + vec2(32.0, 0.0), Align2::LEFT_CENTER, &l.name, theme::regular(13.0), fg);
+                                if resp.on_hover_text(if l.visible { tl!("Hide layer") } else { tl!("Show layer") }).clicked() {
+                                    toggle_layer = Some((li, !l.visible));
+                                }
+                            }
+                        }
+                        RightPanel::Signatures => {
+                            sig_action = crate::sign_ui::panel(ui, &t, &doc.signatures, sig_expanded);
+                        }
+                        RightPanel::Accessibility => {
+                            a11y_action = crate::a11y_ui::panel(ui, &t, a11y, id);
+                        }
+                        RightPanel::Tags => {}
+                        RightPanel::Search => crate::search_ui::panel(ui, &t, view, info.pages.len()),
+                        RightPanel::Compare => compare_action = crate::compare_ui::panel(ui, &t, compare, id),
+                        RightPanel::Attachments => {
+                            if info.attachments.is_empty() {
+                                empty(ui, &t, "paperclip", "This document has no attachments.");
+                            }
+                            for (ai, a) in info.attachments.iter().enumerate() {
+                                egui::Frame::NONE.inner_margin(egui::Margin::symmetric(4, 6)).show(ui, |ui| {
+                                    ui.horizontal(|ui| {
+                                        ui.add(icons::image("paperclip", 16.0, t.icon));
+                                        ui.vertical(|ui| {
+                                            ui.set_width(ui.available_width() - 70.0);
+                                            ui.add(egui::Label::new(egui::RichText::new(&a.name).font(theme::medium(13.0))).truncate());
+                                            let mut meta = a.size.map(human_size).unwrap_or_default();
+                                            if let pdfcraft_render::AttachmentSource::Annotation { page, .. } = a.source {
+                                                let on_page = crate::i18n::fmt(
+                                                    tl!("on page {label}"),
+                                                    &[("label", info.pages.get(page).map(|p| p.label.as_str()).unwrap_or("?"))],
+                                                );
+                                                meta = format!("{meta}  ·  {on_page}");
+                                            }
+                                            if let Some(d) = &a.description {
+                                                meta = format!("{meta}  ·  {d}");
+                                            }
+                                            ui.add(egui::Label::new(egui::RichText::new(meta).color(t.text_faint).small()).truncate());
+                                        });
+                                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                            if icons::button(ui, "file-down", 28.0, false, tl!("Save attachment…")).clicked() {
+                                                attachment_action = Some((ai, false));
+                                            }
+                                            if a.name.to_lowercase().ends_with(".pdf")
+                                                && icons::button(ui, "file-input", 28.0, false, tl!("Open in a new tab")).clicked()
+                                            {
+                                                attachment_action = Some((ai, true));
+                                            }
+                                        });
                                     });
                                 });
-                            });
+                            }
                         }
-                    }
-                });
+                    });
+                }
             });
     }
     if close {
         app.right = None;
     }
     if let Some(e) = panel_edit {
-        app.apply_edit(e);
+        let applied = app.apply_edit(e);
+        if panel == RightPanel::Tags {
+            if applied {
+                crate::tags_ui::applied(&mut app.views[index].tags);
+            } else if let Some((message, _)) = &app.toast {
+                crate::tags_ui::failed(&mut app.views[index].tags, message.clone());
+            }
+        }
     }
     if let Some(c) = panel_command {
         app.run_command(c);

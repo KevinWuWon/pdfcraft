@@ -182,6 +182,7 @@ struct PageTex {
 }
 
 pub struct DocView {
+    pub(crate) tags: crate::tags_ui::State,
     pub id: DocId,
     pub zoom: f32,
     pub fit: Fit,
@@ -339,6 +340,7 @@ impl DocView {
     pub fn new(id: DocId, info: &DocInfo, defaults: ViewDefaults) -> Self {
         Self {
             id,
+            tags: crate::tags_ui::State::default(),
             zoom: defaults.zoom,
             fit: defaults.fit,
             layout: defaults.layout,
@@ -636,6 +638,14 @@ impl DocView {
         let (_, xf) = self.screen_xforms.iter().find(|(p, _)| *p == page)?;
         let g = self.texts.get(&page)?.glyphs.get(glyph)?;
         Some(xf.view_rect(g.rect).center())
+    }
+
+    /// Exact selected glyph rectangles for content-to-structure lookup; never match text strings.
+    pub(crate) fn selected_text_regions(&self) -> Option<(usize, Vec<[f32; 4]>)> {
+        let selection = self.selection?;
+        let text = self.texts.get(&selection.page)?;
+        let glyphs = text.glyphs.get(selection.range())?;
+        (!glyphs.is_empty()).then(|| (selection.page, glyphs.iter().map(|g| g.rect).collect()))
     }
 
     /// Selected text, if any (⌘C).
@@ -1180,6 +1190,10 @@ pub fn document_area(app: &mut PdfCraftApp, index: usize, ui: &mut egui::Ui) {
     // Keyboard scrolling applies to this frame's page view only, never later.
     let key_scroll = std::mem::take(&mut app.views[index].key_scroll);
     // The Search panel closed: its search moves to the find bar.
+    let tags_open = app.right == Some(crate::RightPanel::Tags);
+    if !tags_open {
+        app.views[index].tags.pick_content = false;
+    }
     let search_open = app.right == Some(crate::RightPanel::Search);
     if let Some(f) = app.views[index].find.as_mut()
         && f.in_panel
@@ -1652,7 +1666,21 @@ pub fn document_area(app: &mut PdfCraftApp, index: usize, ui: &mut egui::Ui) {
                     || crate::edit_text_ui::page_input(ui, &resp, &xf, i, info, &lines, view)
             };
             let on_link = tool == QuickTool::Link && can_modify && crate::link_ui::page_input(ui, &resp, &xf, i, info, &doc_links, view);
-            let consumed = on_edit_text || on_link || on_content || boxing || on_field || comments::page_input(ui, &resp, &pcx, view);
+            let picking_tag = tags_open && view.tags.pick_content;
+            if picking_tag {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
+                if ui.input(|input| input.key_pressed(egui::Key::Escape)) {
+                    view.tags.pick_content = false;
+                }
+                if resp.clicked()
+                    && let Some(point) = resp.interact_pointer_pos()
+                {
+                    let (x, y) = xf.screen_to_view(point);
+                    view.tags.hit_request = Some((i, vec![[x, y, x, y]]));
+                    view.tags.pick_content = false;
+                }
+            }
+            let consumed = picking_tag || on_edit_text || on_link || on_content || boxing || on_field || comments::page_input(ui, &resp, &pcx, view);
 
             let preview_target = (tool == QuickTool::Select && !comments_hidden).then_some(view.comments.selected).flatten();
             view.signature_drag.prepare(ui.ctx(), doc, preview_target, scale);
@@ -1806,6 +1834,18 @@ pub fn document_area(app: &mut PdfCraftApp, index: usize, ui: &mut egui::Ui) {
                         let who = a.author.clone().unwrap_or_else(|| a.subtype.clone());
                         let body = a.contents.clone().unwrap_or_default();
                         hover_text = Some((p, if body.is_empty() { who } else { format!("{who}\n{body}") }));
+                    }
+                }
+            }
+            if tags_open {
+                for (page, rect) in &view.tags.marks {
+                    if *page == i {
+                        painter.rect_stroke(
+                            xf.view_rect(*rect).expand(1.0),
+                            CornerRadius::same(2),
+                            Stroke::new(1.5, t.accent),
+                            egui::StrokeKind::Outside,
+                        );
                     }
                 }
             }

@@ -4,7 +4,7 @@
 use std::collections::{HashMap, HashSet};
 
 use pdfcraft_content::Matrix;
-use pdfcraft_cos::{Dict, Document, ObjRef, Object, PdfString, Stream};
+use pdfcraft_cos::{Dict, Document, ObjRef, Object, PdfString};
 
 /// A Figure element (after the role map).
 #[derive(Clone, Debug, PartialEq)]
@@ -23,6 +23,8 @@ pub enum AltError {
     Untagged,
     #[error("object {0} is not a figure")]
     NotAFigure(u32),
+    #[error("{0}")]
+    Artifact(#[from] crate::tags::TagError),
     #[error("{0}")]
     Cos(#[from] pdfcraft_cos::CosError),
 }
@@ -252,70 +254,16 @@ pub fn set_alt(doc: &mut Document, obj: ObjRef, alt: Option<&str>) -> Result<(),
     Ok(())
 }
 
-/// Decorative figure: its marked content on the page becomes an artifact, and the element
-/// leaves the structure tree (and the parent tree).
+/// Mark a leaf figure's exact content as Artifact and detach its semantic association.
+/// Uses the same atomic namespace-aware operation as the tag editor. Unsupported or
+/// reference-sensitive structures are rejected without touching streams or ParentTree.
 pub fn mark_decorative(doc: &mut Document, obj: ObjRef) -> Result<(), AltError> {
-    let d = check_figure(doc, obj)?;
-    let ids: HashSet<i64> = mcids(&d).into_iter().collect();
-    let pages = pdfcraft_model::pages(doc);
-    let pg = d.get(b"Pg").and_then(Object::as_ref).or_else(|| elements(doc).into_iter().find(|(r, _, _)| *r == obj).and_then(|(_, _, p)| p));
-    if let Some(page) = pg.and_then(|p| pages.iter().find(|x| x.obj == p)).filter(|_| !ids.is_empty()) {
-        let mut ops = pdfcraft_content::parse(&page_content(doc, &page.dict)).ops;
-        let mut changed = false;
-        for op in ops.iter_mut() {
-            let ours = op.op == b"BDC"
-                && matches!(op.operands.get(1), Some(Object::Dict(m)) if m.get(b"MCID").and_then(Object::as_int).is_some_and(|n| ids.contains(&n)));
-            if ours {
-                *op = pdfcraft_content::Op::new("BMC", vec![Object::name("Artifact")]);
-                changed = true;
-            }
-        }
-        if changed {
-            let s = doc.add(Object::Stream(Stream::flate(Dict::new(), &pdfcraft_content::serialize_ops(&ops))));
-            doc.update_dict(page.obj, |p| p.set(b"Contents".to_vec(), Object::Ref(s)))?;
-            // The parent tree no longer points those ids at the figure.
-            if let Some(key) = page.dict.get(b"StructParents").and_then(Object::as_int) {
-                clear_parent_tree(doc, key, obj)?;
-            }
-        }
-    }
-    // Out of its parent's kids.
-    if let Some(parent) = d.get(b"P").and_then(Object::as_ref) {
-        let kids = doc.get(parent).as_dict().and_then(|p| p.get(b"K").cloned());
-        let keep = |o: &Object| o.as_ref() != Some(obj);
-        let new = match kids {
-            Some(Object::Array(a)) => Some(Object::Array(a.into_iter().filter(keep).collect())),
-            Some(Object::Ref(r)) if r == obj => Some(Object::Array(Vec::new())),
-            _ => None,
-        };
-        if let Some(k) = new {
-            doc.update_dict(parent, |p| p.set(b"K".to_vec(), k))?;
-        }
-    }
-    Ok(())
+    mark_decorative_with_budget(doc, obj, &mut crate::artifact::ArtifactBudget::default())
 }
 
-/// Replace `obj` by null in the page's parent-tree array (`key`), in a flat /Nums tree.
-fn clear_parent_tree(doc: &mut Document, key: i64, obj: ObjRef) -> Result<(), AltError> {
-    let Some(pt) = tree_root(doc).and_then(|r| r.get(b"ParentTree").and_then(Object::as_ref)) else { return Ok(()) };
-    let Some(nums) = doc.get(pt).as_dict().and_then(|d| d.get(b"Nums").and_then(|n| n.as_array().cloned())) else { return Ok(()) };
-    let mut nums = nums;
-    for pair in nums.chunks_mut(2) {
-        if pair[0].as_int() == Some(key) {
-            match &pair[1] {
-                Object::Array(a) => {
-                    pair[1] = Object::Array(a.iter().map(|x| if x.as_ref() == Some(obj) { Object::Null } else { x.clone() }).collect())
-                }
-                Object::Ref(r) => {
-                    if let Some(a) = doc.get(*r).as_array().cloned() {
-                        let a: Vec<Object> = a.iter().map(|x| if x.as_ref() == Some(obj) { Object::Null } else { x.clone() }).collect();
-                        doc.set(*r, Object::Array(a));
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-    doc.update_dict(pt, |d| d.set(b"Nums".to_vec(), Object::Array(nums)))?;
+/// The same figure-validated conversion with a transaction-wide consumptive allowance.
+pub fn mark_decorative_with_budget(doc: &mut Document, obj: ObjRef, budget: &mut crate::artifact::ArtifactBudget) -> Result<(), AltError> {
+    check_figure(doc, obj)?;
+    crate::artifact::convert_with_budget(doc, obj, false, budget)?;
     Ok(())
 }

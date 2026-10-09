@@ -22,6 +22,8 @@ pub mod links;
 pub mod ocr;
 pub mod optimizer;
 pub mod signature_image;
+mod tag_selection;
+pub use tag_selection::TagMatches;
 pub mod xfa;
 
 pub use signature_image::{ImageSignaturePreview, SignatureImage};
@@ -32,7 +34,7 @@ pub use pdfcraft_organize::{BoxSpec, PageBox, SplitBy, split_ranges};
 pub use pdfcraft_organize::LabelStyle;
 pub use pdfcraft_organize::view::{InitialView, Layout as InitialLayout, Magnification, Navigation};
 
-pub use pdfcraft_cos::Algorithm;
+pub use pdfcraft_cos::{Algorithm, ObjRef};
 pub use pdfcraft_create::{CONVERTIBLE, ImageResolution, SourceKind, source_kind};
 pub use pdfcraft_edit::{
     Added, AddedImage, AddedText, Align as TextAlign, Background, Content as AddedContent, Family as FontFamily, HeaderFooter, MarkKind, Watermark,
@@ -140,6 +142,66 @@ enum Scope {
     Form,
 }
 
+// Repeated artifact conversions each inspect structure, object graphs and encoded
+// content. This is an encoded-document workload estimate, not a decompression bound.
+const ARTIFACT_BATCH_WORK_LIMIT: usize = 100_000;
+const ARTIFACT_BATCH_ENCODED_BYTE_LIMIT: usize = 128 * 1024 * 1024;
+fn validate_artifact_batch_workload(cos: &pdfcraft_cos::Document, edit: &Edit, encoded_bytes: usize) -> Result<(), EditError> {
+    if !matches!(edit, Edit::Batch { .. }) {
+        return Ok(());
+    }
+    let mut stack = vec![(edit, 0usize)];
+    let mut visited = 0usize;
+    let mut artifacts = 0usize;
+    while let Some((edit, depth)) = stack.pop() {
+        visited = visited.saturating_add(1);
+        if visited > 4096 || depth > 64 {
+            return Err(EditError::Accessibility("edit batch exceeds safe traversal limits; use smaller batches".into()));
+        }
+        match edit {
+            Edit::ArtifactTag { .. } | Edit::MarkDecorative { .. } => artifacts = artifacts.saturating_add(1),
+            Edit::Batch { edits, .. } => {
+                if visited.saturating_add(stack.len()).saturating_add(edits.len()) > 4096 {
+                    return Err(EditError::Accessibility("edit batch exceeds safe traversal limits; use smaller batches".into()));
+                }
+                stack.extend(edits.iter().map(|edit| (edit, depth.saturating_add(1))));
+            }
+            _ => {}
+        }
+    }
+    if artifacts <= 1 {
+        return Ok(());
+    }
+    let too_large = || {
+        EditError::Accessibility(
+            "artifact batch exceeds 100000 estimated object/KiB visits or 128 MiB encoded-document workload; use smaller batches".into(),
+        )
+    };
+    let objects = cos.object_numbers();
+    if objects.len().checked_mul(artifacts).is_none_or(|n| n > ARTIFACT_BATCH_WORK_LIMIT) {
+        return Err(too_large());
+    }
+    // Include inserted/rewritten unsaved COS streams, even if the caller's serialized
+    // byte estimate predates them. This intentionally does not decompress any stream.
+    let mut stream_bytes = 0usize;
+    for number in &objects {
+        let value = cos.get(ObjRef::new(*number, cos.generation(*number)));
+        if let pdfcraft_cos::Object::Stream(stream) = &*value {
+            stream_bytes = stream_bytes.checked_add(stream.raw.len()).ok_or_else(too_large)?;
+            if stream_bytes.checked_mul(artifacts).is_none_or(|n| n > ARTIFACT_BATCH_ENCODED_BYTE_LIMIT) {
+                return Err(too_large());
+            }
+        }
+    }
+    let encoded_workload = encoded_bytes.max(stream_bytes);
+    let work = objects.len().checked_add(encoded_workload.div_ceil(1024)).and_then(|n| n.checked_mul(artifacts));
+    let bytes = encoded_workload.checked_mul(artifacts);
+    if work.is_none_or(|n| n > ARTIFACT_BATCH_WORK_LIMIT) || bytes.is_none_or(|n| n > ARTIFACT_BATCH_ENCODED_BYTE_LIMIT) {
+        return Err(too_large());
+    }
+    Ok(())
+}
+
 /// Edits during which field scripts run.
 fn uses_scripts(edit: &Edit) -> bool {
     match edit {
@@ -209,6 +271,8 @@ pub struct Document {
     generation: u64,
     /// The generation last handed out by `autosave_snapshots`.
     snapshot_generation: u64,
+    /// Invalidates externally cached object references when a whole graph may be replaced.
+    object_identity_generation: u64,
     /// Why the document cannot be edited (e.g. encryption), if so.
     pub read_only_reason: Option<String>,
     /// Interactive form fields of the current state (empty without a form).
@@ -243,6 +307,32 @@ impl Document {
     /// read for editing).
     pub fn accessibility_check(&self, options: &a11y::Options) -> Option<a11y::Report> {
         self.editor.as_ref().map(|e| a11y::check(&e.cos, options))
+    }
+
+    /// Inspect the PDF structure tree, retaining mixed content order and full object identities.
+    pub fn tags(&self) -> Result<a11y::tags::TagTree, EditError> {
+        let editor = self
+            .editor
+            .as_ref()
+            .ok_or_else(|| EditError::ReadOnly(self.read_only_reason.clone().unwrap_or_else(|| "the document cannot be read".into())))?;
+        guard(|| a11y::tags::inspect(&editor.cos))
+            .map_err(|e| EditError::Accessibility(format!("tag inspection failed unexpectedly: {e}")))?
+            .map_err(|e| EditError::Accessibility(e.to_string()))
+    }
+
+    /// Marked-content geometry on `page` (zero-based), in displayed-page points with a
+    /// top-left origin. Regions are primitive bounds, not exact painted-pixel hit tests.
+    /// Consult returned issues before treating the result as complete.
+    pub fn tag_content(&self, page: usize) -> Result<pdfcraft_render::tagged::PageTagContent, EditError> {
+        if page >= self.info.pages.len() {
+            return Err(EditError::Accessibility("page does not exist".into()));
+        }
+        guard(|| {
+            let mut renderer = pdfcraft_render::PageRenderer::new(self.display.clone(), self.config.clone());
+            renderer.tag_content(page)
+        })
+        .map_err(|e| EditError::Accessibility(format!("tag content inspection failed unexpectedly: {e}")))?
+        .map_err(EditError::Accessibility)
     }
 
     /// PDF Optimizer ▸ Audit space usage.
@@ -293,6 +383,13 @@ impl Document {
     /// A counter that changes with every edit (for caches of derived data).
     pub fn edit_generation(&self) -> u64 {
         self.generation
+    }
+
+    /// Re-resolve cached PDF object references when this epoch changes. Ordinary edits and
+    /// incremental saves preserve the epoch. Full rewrites, undo, redo and revert invalidate
+    /// it conservatively: the same object number can then identify a different object.
+    pub fn object_identity_generation(&self) -> u64 {
+        self.object_identity_generation
     }
 
     /// Edit a PDF ▸ Edit text: the lines of existing text on `page` (0-based).
@@ -674,6 +771,61 @@ impl Protection {
 /// Edits that can be applied to a document. Page indices are 0-based.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Edit {
+    /// Update a tag ID and its IDTree mapping together; reference-sensitive changes reject.
+    SetTagIdentifier {
+        id: ObjRef,
+        identifier: Option<String>,
+    },
+    /// Convert exact marked-content sequences to artifacts and detach their tag subtree.
+    ArtifactTag {
+        id: ObjRef,
+        include_descendants: bool,
+    },
+    /// Move selected top-level tags in document order, atomically.
+    MoveTags {
+        ids: Vec<ObjRef>,
+        parent: Option<ObjRef>,
+        index: usize,
+    },
+    /// Delete tags atomically; subtree collapses descendants, unwrap processes all selected tags.
+    DeleteTags {
+        ids: Vec<ObjRef>,
+        mode: a11y::tags::DeleteMode,
+    },
+    /// Set a custom role mapping, or remove it with None. All uses must remain valid.
+    SetTagRoleMapping {
+        role: String,
+        target: Option<String>,
+    },
+    /// Reassign an existing content leaf, retaining its page/stream identity.
+    MoveTagContent {
+        source: ObjRef,
+        source_index: usize,
+        destination: ObjRef,
+        index: usize,
+    },
+    /// Create an empty tag at a zero-based mixed-kid position; `None` means the structure root.
+    CreateTag {
+        parent: Option<ObjRef>,
+        index: usize,
+        properties: a11y::tags::TagProperties,
+    },
+    /// Patch tag properties. Omitted properties remain unchanged; nested `None` clears text.
+    UpdateTag {
+        id: ObjRef,
+        properties: a11y::tags::TagProperties,
+    },
+    /// Move a tag. Index is measured after removing it from its old parent.
+    MoveTag {
+        id: ObjRef,
+        parent: Option<ObjRef>,
+        index: usize,
+    },
+    /// Unwrap a tag or remove its complete subtree. Page content is never deleted.
+    DeleteTag {
+        id: ObjRef,
+        mode: a11y::tags::DeleteMode,
+    },
     RotatePages {
         pages: Vec<usize>,
         degrees: i64,
@@ -1085,6 +1237,16 @@ impl Edit {
     /// Label for the Edit menu and history ("Undo Rotate pages").
     pub fn label(&self) -> String {
         match self {
+            Edit::SetTagIdentifier { .. } => "Change tag identifier".into(),
+            Edit::ArtifactTag { .. } => "Convert tag to artifact".into(),
+            Edit::SetTagRoleMapping { .. } => "Edit role mapping".into(),
+            Edit::MoveTagContent { .. } => "Move tag content".into(),
+            Edit::MoveTags { .. } => "Move selected tags".into(),
+            Edit::DeleteTags { .. } => "Delete selected tags".into(),
+            Edit::CreateTag { .. } => "Create tag".into(),
+            Edit::UpdateTag { .. } => "Change tag properties".into(),
+            Edit::MoveTag { .. } => "Move tag".into(),
+            Edit::DeleteTag { .. } => "Delete tag".into(),
             Edit::RotatePages { pages, .. } => plural("Rotate page", pages.len()),
             Edit::DeletePages { pages } => plural("Delete page", pages.len()),
             Edit::MovePages { pages, .. } => plural("Move page", pages.len()),
@@ -1303,6 +1465,16 @@ fn check_permission(edit: &Edit, p: &pdfcraft_cos::Permissions) -> Result<(), Ed
         | Edit::SetTabOrder { .. }
         | Edit::MoveInTabOrder { .. }
         | Edit::SetInitialView(_)
+        | Edit::SetTagIdentifier { .. }
+        | Edit::ArtifactTag { .. }
+        | Edit::SetTagRoleMapping { .. }
+        | Edit::MoveTagContent { .. }
+        | Edit::MoveTags { .. }
+        | Edit::DeleteTags { .. }
+        | Edit::CreateTag { .. }
+        | Edit::UpdateTag { .. }
+        | Edit::MoveTag { .. }
+        | Edit::DeleteTag { .. }
         | Edit::SetAltText { .. }
         | Edit::MarkDecorative { .. }
         | Edit::AddOcrText { .. }
@@ -1325,6 +1497,8 @@ fn check_permission(edit: &Edit, p: &pdfcraft_cos::Permissions) -> Result<(), Ed
 
 /// Dates and unique ids stamped onto what an edit creates.
 struct EditCtx {
+    /// One consumptive allowance for every artifact action, including nested batches.
+    artifact_budget: a11y::artifact::ArtifactBudget,
     /// Field scripts run (`None`: JavaScript is off) and what they produced.
     js: Option<js::JsRunner>,
     /// A laid-out XFA form's template (`None`: not an XFA form, or JavaScript is off) and what
@@ -1356,6 +1530,7 @@ impl EditCtx {
             seed ^= std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.subsec_nanos() as u64).unwrap_or(0) << 32;
         }
         Self {
+            artifact_budget: Default::default(),
             js: None,
             xfa: None,
             xfa_out: Default::default(),
@@ -1530,6 +1705,37 @@ fn run_edit(doc: &mut pdfcraft_cos::Document, edit: &Edit, cx: &mut EditCtx) -> 
         Edit::SetTabOrder { pages, order } => pdfcraft_forms::set_tab_order(doc, pages, *order)?,
         Edit::MoveInTabOrder { name, earlier } => pdfcraft_forms::move_in_tab_order(doc, name, *earlier)?,
         Edit::SetInitialView(v) => pdfcraft_organize::set_initial_view(doc, v)?,
+        Edit::MoveTags { ids, parent, index } => {
+            a11y::tags::move_tags(doc, ids, *parent, *index).map_err(|e| EditError::Accessibility(e.to_string()))?;
+        }
+        Edit::DeleteTags { ids, mode } => {
+            a11y::tags::delete_tags(doc, ids, *mode).map_err(|e| EditError::Accessibility(e.to_string()))?;
+        }
+        Edit::SetTagIdentifier { id, identifier } => {
+            a11y::tags::set_identifier(doc, *id, identifier.as_deref()).map_err(|e| EditError::Accessibility(e.to_string()))?;
+        }
+        Edit::ArtifactTag { id, include_descendants } => {
+            a11y::artifact::convert_with_budget(doc, *id, *include_descendants, &mut cx.artifact_budget)
+                .map_err(|e| EditError::Accessibility(e.to_string()))?;
+        }
+        Edit::SetTagRoleMapping { role, target } => {
+            a11y::tags::set_role_mapping(doc, role, target.as_deref()).map_err(|e| EditError::Accessibility(e.to_string()))?;
+        }
+        Edit::MoveTagContent { source, source_index, destination, index } => {
+            a11y::tags::move_content(doc, *source, *source_index, *destination, *index).map_err(|e| EditError::Accessibility(e.to_string()))?;
+        }
+        Edit::CreateTag { parent, index, properties } => {
+            a11y::tags::create(doc, *parent, *index, properties).map_err(|e| EditError::Accessibility(e.to_string()))?;
+        }
+        Edit::UpdateTag { id, properties } => {
+            a11y::tags::update(doc, *id, properties).map_err(|e| EditError::Accessibility(e.to_string()))?;
+        }
+        Edit::MoveTag { id, parent, index } => {
+            a11y::tags::move_tag(doc, *id, *parent, *index).map_err(|e| EditError::Accessibility(e.to_string()))?;
+        }
+        Edit::DeleteTag { id, mode } => {
+            a11y::tags::delete(doc, *id, *mode).map_err(|e| EditError::Accessibility(e.to_string()))?;
+        }
         Edit::SetAltText { figure, alt } => {
             let r = pdfcraft_cos::ObjRef::new(*figure, doc.generation(*figure));
             a11y::set_alt(doc, r, alt.as_deref()).map_err(|e| EditError::Accessibility(e.to_string()))?;
@@ -1572,7 +1778,7 @@ fn run_edit(doc: &mut pdfcraft_cos::Document, edit: &Edit, cx: &mut EditCtx) -> 
         }
         Edit::MarkDecorative { figure } => {
             let r = pdfcraft_cos::ObjRef::new(*figure, doc.generation(*figure));
-            a11y::mark_decorative(doc, r).map_err(|e| EditError::Accessibility(e.to_string()))?;
+            a11y::mark_decorative_with_budget(doc, r, &mut cx.artifact_budget).map_err(|e| EditError::Accessibility(e.to_string()))?;
         }
         Edit::AddHeaderFooter { pages, settings, replace } => {
             let date = cx.today;
@@ -2216,6 +2422,7 @@ impl Session {
             dirty: false,
             generation: 0,
             snapshot_generation: 0,
+            object_identity_generation: 0,
             read_only_reason,
             form: Arc::new(form),
             marks,
@@ -2255,6 +2462,8 @@ impl Session {
         let reason = doc.read_only_reason.clone().unwrap_or_default();
         let signed = doc.is_signed();
         let editor = doc.editor.as_mut().ok_or(EditError::ReadOnly(reason))?;
+        guard(|| validate_artifact_batch_workload(&editor.cos, &edit, doc.bytes.len()))
+            .unwrap_or_else(|m| Err(EditError::Accessibility(format!("batch workload check failed: {m}"))))?;
         if let Some(p) = editor.cos.permissions() {
             check_permission(&edit, &p)?;
         }
@@ -2358,6 +2567,7 @@ impl Session {
         let editor = doc.editor.as_mut().ok_or(EditError::NothingToUndo)?;
         let (label, prev, keys, scope) = editor.undo.pop().ok_or(EditError::NothingToUndo)?;
         let current = std::mem::replace(&mut editor.cos, prev);
+        doc.object_identity_generation = doc.object_identity_generation.saturating_add(1);
         let current_keys = std::mem::replace(&mut editor.keys, keys);
         editor.redo.push((label.clone(), current, current_keys, scope));
         Self::adopt_keys(doc);
@@ -2372,6 +2582,7 @@ impl Session {
         let editor = doc.editor.as_mut().ok_or(EditError::NothingToRedo)?;
         let (label, next, keys, scope) = editor.redo.pop().ok_or(EditError::NothingToRedo)?;
         let current = std::mem::replace(&mut editor.cos, next);
+        doc.object_identity_generation = doc.object_identity_generation.saturating_add(1);
         let current_keys = std::mem::replace(&mut editor.keys, keys);
         editor.undo.push((label.clone(), current, current_keys, scope));
         Self::adopt_keys(doc);
@@ -2501,8 +2712,14 @@ impl Session {
         if let Some(editor) = doc.editor.as_mut() {
             // An encrypted file needs the password it is protected with now (the owner
             // password when known, so saving never downgrades this session's rights).
+            // A true incremental update retains the entire old base as a prefix. Full
+            // rewrites (including security changes) may recycle object identities.
+            let identities_may_change = !bytes.starts_with(editor.cos.bytes().as_slice());
             editor.cos = pdfcraft_cos::Document::open_with_password(bytes.clone(), editor.keys.reopen.as_deref())
                 .map_err(|e| EditError::Reopen(e.to_string()))?;
+            if identities_may_change {
+                doc.object_identity_generation = doc.object_identity_generation.saturating_add(1);
+            }
         }
         if let Some(p) = path {
             doc.name = std::path::Path::new(&p).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| p.clone());
@@ -2529,6 +2746,7 @@ impl Session {
             .find_map(|k| pdfcraft_cos::Document::open_with_password(base.clone(), k.reopen.as_deref()).ok().map(|c| (c, k)))
             .ok_or_else(|| EditError::Reopen("the saved file can't be opened".into()))?;
         editor.cos = cos;
+        doc.object_identity_generation = doc.object_identity_generation.saturating_add(1);
         editor.keys = keys;
         editor.undo.clear();
         editor.redo.clear();

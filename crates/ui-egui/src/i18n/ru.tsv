@@ -1994,6 +1994,108 @@
 	Created a PDF from {n} files; left out: {names}	PDF создан из файлов: {n}; пропущены: {names}
 	Created a PDF from the first {n} files	PDF создан из первых файлов: {n}
 	Go to page…	Перейти на страницу…
+
+# Accessibility tag editor and upstream attribution.
+	Edit document tags	Редактировать теги документа
+	Accessibility tags	Теги доступности
+	Ambiguous, reused or unsupported content is refused without changing the document.	Неоднозначное, повторно используемое или неподдерживаемое содержимое отклоняется без изменения документа.
+	Apply or cancel the property changes before selecting another tag.	Примените или отмените изменения свойств, прежде чем выбирать другой тег.
+	Apply or cancel the property changes first.	Сначала примените или отмените изменения свойств.
+	Apply properties	Применить свойства
 	Based on PdfCraft by the ArtCraft team.	На основе PdfCraft, созданного командой ArtCraft.
+	Cancel properties	Отменить изменения свойств
+	Changing an ID can break external links that use the old ID.	Изменение идентификатора может нарушить внешние ссылки, использующие прежний идентификатор.
+	Click page content to find its tag. Escape cancels.	Нажмите на содержимое страницы, чтобы найти его тег. Escape отменяет действие.
+	Collapse all tags	Свернуть все теги
+	Convert marked content	Преобразовать размеченное содержимое
+	Convert to artifact:	Преобразовать в артефакт:
+	Convert to artifact…	Преобразовать в артефакт…
+	Creating a tag does not automatically associate page content.	Создание тега не связывает с ним содержимое страницы автоматически.
+	Delete subtree	Удалить поддерево
+	Delete tag structure? Page artwork stays unchanged; it does not become an artifact.	Удалить структуру тегов? Изображение страницы останется прежним; содержимое не станет артефактом.
+	Delete tag…	Удалить тег…
+	Edit role mappings…	Изменить сопоставления ролей…
+	Expand all tags	Развернуть все теги
+	Find tag from selection	Найти тег выделенного содержимого
+	Find tags	Найти теги
+	Go to page	Перейти к странице
+	Highlight content	Подсветить содержимое
+	Keep tag	Сохранить тег
+	Keep tagged content	Сохранить разметку содержимого
+	Language uses a language tag such as en-US. Empty text removes the property.	Язык задаётся языковой меткой, например ru-RU. Пустое поле удаляет свойство.
+	Mapped type:	Сопоставленный тип:
+	Move content to…	Переместить содержимое в…
+	Move selected tags…	Переместить выбранные теги…
+	New child tag	Новый дочерний тег
+	New tag	Новый тег
+	New tag after	Новый тег после
+	No matching tags.	Подходящих тегов нет.
+	No supported painted content bounds for this tag on this page.	Для этого тега на этой странице нет поддерживаемых границ нарисованного содержимого.
+	No tag with supported content bounds intersects this selection.	Нет тега с поддерживаемыми границами содержимого, пересекающими выделенную область.
+	Outlines show content selection bounds, not pixel-exact painted shapes.	Контуры показывают границы выделения содержимого, а не точную попиксельную форму рисунка.
+	Properties	Свойства
+	Reveal	Показать
+	Select content on page	Выбрать содержимое на странице
+	Selected for deletion:	Выбрано для удаления:
+	Show content items	Показывать элементы содержимого
+	Standard types	Стандартные типы
+	Structure warnings	Предупреждения о структуре
+	Tag ID	Идентификатор тега
+	Tag ID:	Идентификатор тега:
+	Tag options	Параметры тегов
+	Tag properties	Свойства тега
+	The document changed. Cancel to reload these properties.	Документ изменился. Отмените редактирование, чтобы перезагрузить эти свойства.
+	The selected tags and descendants will be removed from the accessibility tree. Their marked content becomes decorative; page artwork stays visible.	Выбранные теги и их потомки будут удалены из дерева доступности. Их размеченное содержимое станет декоративным; изображение страницы останется видимым.
+	This document does not allow structure editing.	Этот документ не разрешает редактирование структуры.
+	This document has no accessibility tags.	В этом документе нет тегов доступности.
+	Type, title or text	Тип, заголовок или текст
+	Unwrap tag	Удалить тег с сохранением дочерних элементов
 	Upstream Discord	Discord исходного проекта
 	Upstream community	Сообщество исходного проекта
+	matching tags	совпавших тегов
+	tags selected	выбранных тегов
+	Actual text	Замещающий текст
+	Abbreviation expansion	Расшифровка сокращения
+	Edit role mappings	Изменить сопоставления ролей
+	Map a custom tag role to a standard structure type. Each mapping affects every tag using that role in this document.	Сопоставьте пользовательскую роль тега со стандартным типом структуры. Каждое сопоставление действует на все теги с этой ролью в документе.
+	No role mappings yet.	Сопоставлений ролей пока нет.
+	Custom role	Пользовательская роль
+	For example: ChapterTitle	Например: ChapterTitle
+	Maps to	Соответствует
+	For example: H1	Например: H1
+	Standard type	Стандартный тип
+	Choose a standard type…	Выбрать стандартный тип…
+	{affected} tag(s) currently use this custom role.	Число тегов, использующих эту пользовательскую роль: {affected}.
+	The document changed while this dialog was open. Your draft is kept. Reopen the dialog to work with the current document.	Документ изменился, пока это окно было открыто. Черновик сохранён. Откройте окно заново, чтобы работать с текущей версией документа.
+	Could not apply: {error}	Не удалось применить: {error}
+	Apply mapping	Применить сопоставление
+	Remove mapping	Удалить сопоставление
+	Move to tag	Переместить в тег
+	Move {count} selected tag(s), keeping their subtrees and content.	Переместить выбранные теги ({count}), сохранив их поддеревья и содержимое.
+	Move content child {index} from tag {source}.	Переместить дочерний элемент содержимого {index} из тега {source}.
+	Find destination	Найти место назначения
+	Find destination by role, title, or object reference	Найти место назначения по роли, заголовку или ссылке на объект
+	Structure tree root	Корень дерева структуры
+	More destinations available. Refine your search.	Есть другие места назначения. Уточните поиск.
+	Unavailable tag {id}	Недоступный тег {id}
+	Choose a destination tag	Выбрать целевой тег
+	Destination: {destination_name}	Место назначения: {destination_name}
+	Position (1-based)	Позиция (начиная с 1)
+	Valid range: 1–{limit}	Допустимый диапазон: 1–{limit}
+	Positions count all siblings, including content leaves. The position is measured after the moving items are removed; the last position appends.	Позиции учитывают все элементы одного уровня, включая конечные элементы содержимого. Позиция определяется после удаления перемещаемых элементов; последняя позиция добавляет их в конец.
+	The document changed. This move draft is kept, but reopen the dialog before applying so content positions and tag identities can be checked again.	Документ изменился. Черновик перемещения сохранён, но перед применением откройте окно заново, чтобы ещё раз проверить позиции содержимого и соответствие тегов.
+	The original selection is no longer available.	Исходное выделение больше недоступно.
+	Choose a destination outside the moving subtrees. Content must belong to a tag.	Выберите место назначения вне перемещаемых поддеревьев. Содержимое должно принадлежать тегу.
+	Could not move: {error}	Не удалось переместить: {error}
+	Move	Переместить
+	Edit tag properties	Изменить свойства тега
+	Convert selected tags to artifacts	Преобразовать выбранные теги в артефакты
+	Object {id}	Объект {id}
+	{count} tags	Тегов: {count}
+	 + {count} tags	 + тегов: {count}
+	Move content up	Переместить содержимое вверх
+	Move content down	Переместить содержимое вниз
+	Content · MCID {id}	Содержимое · MCID {id}
+	Content · MCID {id} · stream	Содержимое · MCID {id} · поток
+	Object reference · {object}	Ссылка на объект · {object}
+	Unsupported · {description}	Не поддерживается · {description}

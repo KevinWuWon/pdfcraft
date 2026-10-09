@@ -10,6 +10,7 @@
 
 mod inspect;
 mod raster;
+pub mod tagged;
 pub mod text;
 
 pub use inspect::{

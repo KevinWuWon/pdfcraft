@@ -2108,3 +2108,465 @@ fn comments_without_appearances_are_drawn_but_not_saved() {
         assert!(reopened.get(r).as_dict().is_some_and(|d| !d.contains(b"AP")), "{r:?} is saved without /AP");
     }
 }
+
+#[test]
+fn tag_edits_preserve_identity_across_save_undo_and_redo() {
+    use a11y::tags::{DeleteMode, TagProperties};
+    let (mut s, id) = session_with(1);
+    let create =
+        |parent, role: &str| Edit::CreateTag { parent, index: 0, properties: TagProperties { role: Some(role.into()), ..Default::default() } };
+    assert!(s.get(id).unwrap().tags().unwrap().elements.is_empty());
+    s.apply(id, create(None, "Document")).unwrap();
+    let root = s.get(id).unwrap().tags().unwrap().elements[0].id;
+    s.apply(id, create(Some(root), "P")).unwrap();
+    let paragraph = s.get(id).unwrap().tags().unwrap().elements[1].id;
+    s.apply(
+        id,
+        Edit::UpdateTag {
+            id: paragraph,
+            properties: TagProperties { title: Some(Some("Résumé 日本語".into())), alt: Some(Some("Description".into())), ..Default::default() },
+        },
+    )
+    .unwrap();
+    let expected = s.get(id).unwrap().tags().unwrap();
+    let saved = s.save_bytes(id).unwrap();
+    s.mark_saved(id, saved.clone(), None).unwrap();
+    let mut reopened = Session::new();
+    let rid = reopened.open("tags.pdf", None, saved, None).unwrap();
+    assert_eq!(reopened.get(rid).unwrap().tags().unwrap(), expected);
+    s.undo(id).unwrap();
+    assert_eq!(s.get(id).unwrap().tags().unwrap().elements[1].title, None);
+    s.redo(id).unwrap();
+    assert_eq!(s.get(id).unwrap().tags().unwrap(), expected);
+    s.apply(id, Edit::MoveTag { id: paragraph, parent: None, index: 1 }).unwrap();
+    assert_eq!(s.get(id).unwrap().tags().unwrap().elements[1].parent, None);
+    s.apply(id, Edit::DeleteTag { id: root, mode: DeleteMode::Unwrap }).unwrap();
+    assert_eq!(s.get(id).unwrap().tags().unwrap().elements[0].id, paragraph);
+    s.undo(id).unwrap();
+    s.undo(id).unwrap();
+    assert_eq!(s.get(id).unwrap().tags().unwrap(), expected);
+    s.apply(id, Edit::DeleteTag { id: root, mode: DeleteMode::Subtree }).unwrap();
+    assert!(s.get(id).unwrap().tags().unwrap().elements.is_empty());
+    s.undo(id).unwrap();
+    assert_eq!(s.get(id).unwrap().tags().unwrap(), expected);
+    let bytes = s.save_bytes(id).unwrap();
+    let rid = reopened.open("tags-again.pdf", None, bytes, None).unwrap();
+    assert_eq!(reopened.get(rid).unwrap().tags().unwrap(), expected);
+}
+
+#[test]
+fn tag_failures_are_atomic_and_permissions_are_enforced() {
+    use a11y::tags::{DeleteMode, TagProperties};
+    let (mut s, id) = session_with(1);
+    let properties = TagProperties { role: Some("P".into()), ..Default::default() };
+    let before = s.get(id).unwrap().bytes.clone();
+    assert!(s.apply(id, Edit::CreateTag { parent: None, index: 20, properties: properties.clone() }).is_err());
+    assert_eq!(s.get(id).unwrap().bytes, before);
+    assert_eq!(s.get(id).unwrap().can_undo(), None);
+    assert!(!s.get(id).unwrap().dirty);
+    s.apply(id, Edit::CreateTag { parent: None, index: 0, properties: properties.clone() }).unwrap();
+    let tag = s.get(id).unwrap().tags().unwrap().elements[0].id;
+    let tree = s.get(id).unwrap().tags().unwrap();
+    let before = s.get(id).unwrap().bytes.clone();
+    for edit in [
+        Edit::MoveTag { id: tag, parent: Some(tag), index: 0 },
+        Edit::UpdateTag { id: ObjRef::new(tag.num, tag.generation + 1), properties: properties.clone() },
+        Edit::DeleteTag { id: ObjRef::new(999999, 0), mode: DeleteMode::Subtree },
+    ] {
+        assert!(s.apply(id, edit).is_err());
+        assert_eq!(s.get(id).unwrap().bytes, before);
+        assert_eq!(s.get(id).unwrap().tags().unwrap(), tree);
+        assert_eq!(s.get(id).unwrap().can_undo(), Some("Create tag"));
+    }
+    s.apply(id, Edit::Protect(Protection { changes: Changes::None, ..protection(None, Some("owner")) })).unwrap();
+    let bytes = s.save_bytes(id).unwrap();
+    let mut locked = Session::new();
+    let lid = locked.open("restricted.pdf", None, bytes, None).unwrap();
+    assert!(locked.get(lid).unwrap().tags().is_ok());
+    for edit in [
+        Edit::CreateTag { parent: None, index: 0, properties: properties.clone() },
+        Edit::UpdateTag { id: tag, properties },
+        Edit::MoveTag { id: tag, parent: None, index: 0 },
+        Edit::DeleteTag { id: tag, mode: DeleteMode::Unwrap },
+    ] {
+        assert!(matches!(locked.apply(lid, edit), Err(EditError::NotPermitted(_))));
+    }
+    assert!(!locked.get(lid).unwrap().dirty);
+    assert_eq!(locked.get(lid).unwrap().can_undo(), None);
+}
+
+#[test]
+fn tag_editor_reports_unreadable_documents_without_mutation() {
+    let (mut s, id) = session_with(1);
+    let doc = s.doc_mut(id).unwrap();
+    doc.editor = None;
+    doc.read_only_reason = Some("synthetic unreadable object graph".into());
+    let before = doc.bytes.clone();
+    assert!(matches!(doc.tags(), Err(EditError::ReadOnly(_))));
+    assert!(matches!(
+        s.apply(
+            id,
+            Edit::CreateTag { parent: None, index: 0, properties: a11y::tags::TagProperties { role: Some("P".into()), ..Default::default() } }
+        ),
+        Err(EditError::ReadOnly(_))
+    ));
+    let doc = s.get(id).unwrap();
+    assert_eq!(doc.bytes, before);
+    assert!(!doc.dirty);
+    assert_eq!(doc.can_undo(), None);
+}
+
+#[test]
+fn object_identity_epoch_invalidates_full_rewrites_and_history_transitions() {
+    let (mut s, id) = session_with(1);
+    let epoch = |s: &Session| s.get(id).unwrap().object_identity_generation();
+    assert_eq!(epoch(&s), 0);
+    s.apply(
+        id,
+        Edit::CreateTag { parent: None, index: 0, properties: a11y::tags::TagProperties { role: Some("Document".into()), ..Default::default() } },
+    )
+    .unwrap();
+    assert_eq!(epoch(&s), 0, "ordinary edits keep existing identities");
+    let saved = s.save_bytes(id).unwrap();
+    s.mark_saved(id, saved, None).unwrap();
+    assert_eq!(epoch(&s), 0, "incremental saves retain identities");
+    let full = s.save_full_bytes(id).unwrap();
+    s.mark_saved(id, full, None).unwrap();
+    assert_eq!(epoch(&s), 1, "full rewrite can renumber even live object references");
+    s.undo(id).unwrap();
+    assert_eq!(epoch(&s), 2, "undo may return to a pre-rewrite graph");
+    s.redo(id).unwrap();
+    assert_eq!(epoch(&s), 3);
+    s.revert(id).unwrap();
+    assert_eq!(epoch(&s), 4);
+    assert!(s.apply(id, Edit::MoveTag { id: ObjRef::new(u32::MAX, 0), parent: None, index: 0 }).is_err());
+    assert_eq!(epoch(&s), 4, "failed edits do not invalidate identities");
+}
+
+#[test]
+fn role_mapping_and_batch_edits_are_undoable_and_persist() {
+    let (mut session, id) = session_with(1);
+    let create = |parent, role: &str| Edit::CreateTag {
+        parent,
+        index: 0,
+        properties: a11y::tags::TagProperties { role: Some(role.into()), ..Default::default() },
+    };
+    session.apply(id, create(None, "Document")).unwrap();
+    let top = session.get(id).unwrap().tags().unwrap().elements[0].id;
+    session.apply(id, Edit::SetTagRoleMapping { role: "Custom".into(), target: Some("P".into()) }).unwrap();
+    session.apply(id, create(Some(top), "Custom")).unwrap();
+    let a = session.get(id).unwrap().tags().unwrap().elements[1].id;
+    session.apply(id, create(Some(top), "H1")).unwrap();
+    let b = session.get(id).unwrap().tags().unwrap().elements[1].id;
+    let before = session.get(id).unwrap().tags().unwrap();
+    let bytes = session.get(id).unwrap().bytes.clone();
+    assert!(session.apply(id, Edit::SetTagRoleMapping { role: "Custom".into(), target: None }).is_err());
+    assert_eq!(session.get(id).unwrap().bytes, bytes);
+    assert_eq!(session.get(id).unwrap().tags().unwrap(), before);
+    session.apply(id, Edit::MoveTags { ids: vec![a, b], parent: None, index: 1 }).unwrap();
+    let moved = session.get(id).unwrap().tags().unwrap();
+    assert_eq!(moved.elements[1].id, b);
+    assert_eq!(moved.elements[2].id, a);
+    session.undo(id).unwrap();
+    assert_eq!(session.get(id).unwrap().tags().unwrap(), before);
+    session.redo(id).unwrap();
+    assert_eq!(session.get(id).unwrap().tags().unwrap(), moved);
+    session.apply(id, Edit::DeleteTags { ids: vec![a, b], mode: a11y::tags::DeleteMode::Subtree }).unwrap();
+    assert_eq!(session.get(id).unwrap().tags().unwrap().elements.len(), 1);
+    session.undo(id).unwrap();
+    assert_eq!(session.get(id).unwrap().tags().unwrap(), moved);
+    let saved = session.save_bytes(id).unwrap();
+    let reopened = session.open("tags.pdf", None, saved, None).unwrap();
+    assert_eq!(session.get(reopened).unwrap().tags().unwrap(), moved);
+}
+
+#[test]
+fn tag_identifier_engine_undo_redo_and_duplicate_rejection() {
+    let (mut s, id) = session_with(1);
+    s.apply(id, Edit::CreateTag { parent: None, index: 0, properties: a11y::tags::TagProperties::default() }).unwrap();
+    let root = s.get(id).unwrap().tags().unwrap().elements[0].id;
+    let before = s.get(id).unwrap().tags().unwrap();
+    s.apply(id, Edit::SetTagIdentifier { id: root, identifier: Some("日本語".into()) }).unwrap();
+    let after = s.get(id).unwrap().tags().unwrap();
+    assert_eq!(after.elements[0].identifier.as_deref(), Some("日本語"));
+    s.undo(id).unwrap();
+    assert_eq!(s.get(id).unwrap().tags().unwrap(), before);
+    s.redo(id).unwrap();
+    assert_eq!(s.get(id).unwrap().tags().unwrap(), after);
+    let bytes = s.save_bytes(id).unwrap();
+    let reopened = s.open("identifier.pdf", None, bytes, None).unwrap();
+    assert_eq!(s.get(reopened).unwrap().tags().unwrap(), after);
+}
+
+#[test]
+fn artifact_engine_preserves_rendering_save_reopen_and_undo() {
+    use pdfcraft_cos::{Dict, Object, Stream};
+    let mut cos = pdfcraft_cos::Document::open(Arc::new(fixture(1))).unwrap();
+    let tag = a11y::tags::create(&mut cos, None, 0, &a11y::tags::TagProperties::default()).unwrap();
+    let page = pdfcraft_model::pages(&cos)[0].obj;
+    let stream = cos.add(Object::Stream(Stream::from_raw(Dict::new(), b"/P <</MCID 0>> BDC q 1 0 0 rg 20 20 70 80 re f Q EMC".to_vec())));
+    cos.update_dict(page, |d| {
+        d.set(b"Contents", Object::Ref(stream));
+        d.set(b"StructParents", Object::Int(0));
+    })
+    .unwrap();
+    cos.update_dict(tag, |d| {
+        d.set(b"Pg", Object::Ref(page));
+        d.set(b"K", Object::Int(0));
+    })
+    .unwrap();
+    let root = a11y::tags::inspect(&cos).unwrap().root.unwrap();
+    let mut pt = Dict::new();
+    pt.set(b"Nums", Object::Array(vec![Object::Int(0), Object::Array(vec![Object::Ref(tag)])]));
+    cos.update_dict(root, |d| d.set(b"ParentTree", Object::Dict(pt))).unwrap();
+    let bytes = pdfcraft_cos::write_full(&cos, &Default::default()).unwrap();
+    let mut s = Session::new();
+    let id = s.open("artifact.pdf", None, Arc::new(bytes), None).unwrap();
+    let tree = s.get(id).unwrap().tags().unwrap();
+    let tag = tree.elements[0].id;
+    let render = |s: &Session, id| {
+        let d = s.get(id).unwrap();
+        let mut r = pdfcraft_render::PageRenderer::new(d.bytes.clone(), d.config.clone());
+        let out = r.render(pdfcraft_render::RenderRequest { page: 0, scale: 1.0, ..Default::default() });
+        assert!(out.error.is_none());
+        out.rgba
+    };
+    let pixels = render(&s, id);
+    s.apply(id, Edit::ArtifactTag { id: tag, include_descendants: false }).unwrap();
+    assert_eq!(render(&s, id), pixels);
+    assert!(s.get(id).unwrap().tags().unwrap().elements.is_empty());
+    s.undo(id).unwrap();
+    assert_eq!(s.get(id).unwrap().tags().unwrap(), tree);
+    s.redo(id).unwrap();
+    assert_eq!(render(&s, id), pixels);
+    let bytes = s.save_bytes(id).unwrap();
+    let reopened = s.open("converted.pdf", None, bytes, None).unwrap();
+    assert_eq!(render(&s, reopened), pixels);
+    assert!(s.get(reopened).unwrap().tags().unwrap().elements.is_empty());
+}
+
+#[test]
+fn legacy_decorative_uses_exact_image_conversion_and_rejects_idtree_atomically() {
+    use pdfcraft_cos::{Dict, Object, Stream};
+    let mut cos = pdfcraft_cos::Document::open(Arc::new(fixture(1))).unwrap();
+    let figure = a11y::tags::create(&mut cos, None, 0, &a11y::tags::TagProperties { role: Some("Figure".into()), ..Default::default() }).unwrap();
+    let page = pdfcraft_model::pages(&cos)[0].obj;
+    let mut image = Dict::new();
+    image.set(b"Type", Object::name("XObject"));
+    image.set(b"Subtype", Object::name("Image"));
+    image.set(b"Width", Object::Int(1));
+    image.set(b"Height", Object::Int(1));
+    image.set(b"BitsPerComponent", Object::Int(8));
+    image.set(b"ColorSpace", Object::name("DeviceGray"));
+    let image = cos.add(Object::Stream(Stream::from_raw(image, vec![70])));
+    let content = cos.add(Object::Stream(Stream::from_raw(Dict::new(), b"/Figure <</MCID 0>> BDC q 70 0 0 80 20 20 cm /Im Do Q EMC".to_vec())));
+    let mut xobjects = Dict::new();
+    xobjects.set(b"Im", Object::Ref(image));
+    let mut resources = Dict::new();
+    resources.set(b"XObject", Object::Dict(xobjects));
+    cos.update_dict(page, |d| {
+        d.set(b"Contents", Object::Ref(content));
+        d.set(b"Resources", Object::Dict(resources));
+        d.set(b"StructParents", Object::Int(0));
+    })
+    .unwrap();
+    cos.update_dict(figure, |d| {
+        d.set(b"Pg", Object::Ref(page));
+        d.set(b"K", Object::Int(0));
+    })
+    .unwrap();
+    let array = cos.add(Object::Array(vec![Object::Ref(figure)]));
+    let mut leaf = Dict::new();
+    leaf.set(b"Nums", Object::Array(vec![Object::Int(0), Object::Ref(array)]));
+    leaf.set(b"Limits", Object::Array(vec![Object::Int(0), Object::Int(0)]));
+    leaf.set(b"Private", Object::Int(73));
+    let leaf = cos.add(leaf);
+    let mut pt = Dict::new();
+    pt.set(b"Kids", Object::Array(vec![Object::Ref(leaf)]));
+    let pt = cos.add(pt);
+    let root = a11y::tags::inspect(&cos).unwrap().root.unwrap();
+    cos.update_dict(root, |d| d.set(b"ParentTree", Object::Ref(pt))).unwrap();
+    let bytes = pdfcraft_cos::write_full(&cos, &Default::default()).unwrap();
+    let mut s = Session::new();
+    let id = s.open("decorative-image.pdf", None, Arc::new(bytes), None).unwrap();
+    let tree = s.get(id).unwrap().tags().unwrap();
+    let figure = tree.elements[0].id;
+    let render = |s: &Session, id| {
+        let d = s.get(id).unwrap();
+        let mut r = pdfcraft_render::PageRenderer::new(d.bytes.clone(), d.config.clone());
+        let out = r.render(pdfcraft_render::RenderRequest { page: 0, scale: 1.0, ..Default::default() });
+        assert!(out.error.is_none());
+        out.rgba
+    };
+    let pixels = render(&s, id);
+    assert!(pixels.iter().any(|value| *value != 255));
+    s.apply(id, Edit::MarkDecorative { figure: figure.num }).unwrap();
+    assert_eq!(render(&s, id), pixels);
+    let converted = s.get(id).unwrap().tags().unwrap();
+    assert!(converted.elements.is_empty() && converted.issues.is_empty());
+    let saved = s.save_bytes(id).unwrap();
+    let reopened = s.open("decorative-saved.pdf", None, saved, None).unwrap();
+    assert_eq!(render(&s, reopened), pixels);
+    assert_eq!(s.get(reopened).unwrap().tags().unwrap(), converted);
+    s.undo(id).unwrap();
+    assert_eq!(s.get(id).unwrap().tags().unwrap(), tree);
+    s.redo(id).unwrap();
+    assert_eq!(render(&s, id), pixels);
+    s.undo(id).unwrap();
+    s.apply(id, Edit::SetTagIdentifier { id: figure, identifier: Some("figure-id".into()) }).unwrap();
+    let before = s.get(id).unwrap().bytes.clone();
+    let tree = s.get(id).unwrap().tags().unwrap();
+    let history = s.get(id).unwrap().can_undo().map(str::to_owned);
+    assert!(s.apply(id, Edit::MarkDecorative { figure: figure.num }).is_err());
+    assert_eq!(s.get(id).unwrap().bytes, before);
+    assert_eq!(s.get(id).unwrap().tags().unwrap(), tree);
+    assert_eq!(s.get(id).unwrap().can_undo().map(str::to_owned), history);
+    assert_eq!(render(&s, id), pixels);
+}
+
+#[test]
+fn tag_batch_workload_refusals_preserve_bytes_and_history() {
+    use pdfcraft_cos::{Dict, Object};
+    let mut cos = pdfcraft_cos::Document::open(Arc::new(fixture(1))).unwrap();
+    let top = a11y::tags::create(&mut cos, None, 0, &a11y::tags::TagProperties::default()).unwrap();
+    let mut ids = Vec::new();
+    for _ in 0..600 {
+        let mut d = Dict::new();
+        d.set(b"S", Object::name("P"));
+        d.set(b"P", Object::Ref(top));
+        ids.push(cos.add(d));
+    }
+    cos.update_dict(top, |d| d.set(b"K", Object::Array(ids.iter().copied().map(Object::Ref).collect()))).unwrap();
+    let bytes = pdfcraft_cos::write_full(&cos, &Default::default()).unwrap();
+    let mut s = Session::new();
+    let id = s.open("large-tags.pdf", None, Arc::new(bytes), None).unwrap();
+    let tree = s.get(id).unwrap().tags().unwrap();
+    let top = tree.elements[0].id;
+    s.apply(
+        id,
+        Edit::UpdateTag { id: top, properties: a11y::tags::TagProperties { title: Some(Some("History retained".into())), ..Default::default() } },
+    )
+    .unwrap();
+    let doc = s.get(id).unwrap();
+    let tree = doc.tags().unwrap();
+    let object_count = doc.editor.as_ref().unwrap().cos.object_numbers().len();
+    let per_delete = tree.elements.len() + tree.children.len() + tree.elements.iter().map(|e| e.kids.len()).sum::<usize>() + object_count;
+    let count = 1_000_000 / per_delete + 1;
+    let ids = tree.elements.iter().skip(1).take(count).map(|e| e.id).collect::<Vec<_>>();
+    assert_eq!(ids.len(), count);
+    let before = doc.bytes.clone();
+    let history = doc.can_undo().map(str::to_owned);
+    let epoch = doc.object_identity_generation();
+    for mode in [a11y::tags::DeleteMode::Subtree, a11y::tags::DeleteMode::Unwrap] {
+        let error = s.apply(id, Edit::DeleteTags { ids: ids.clone(), mode }).unwrap_err();
+        assert!(error.to_string().contains("use smaller batches"));
+        assert_eq!(s.get(id).unwrap().bytes, before);
+        assert_eq!(s.get(id).unwrap().can_undo().map(str::to_owned), history);
+        assert_eq!(s.get(id).unwrap().object_identity_generation(), epoch);
+    }
+    // Just over the object+encoded-KiB workload, with each artifact nested in its own batch.
+    let per_artifact = object_count + before.len().div_ceil(1024);
+    let count = ARTIFACT_BATCH_WORK_LIMIT / per_artifact + 1;
+    let nested = Edit::Batch {
+        label: "Large artifact selection".into(),
+        edits: (0..count)
+            .map(|_| Edit::Batch { label: "nested".into(), edits: vec![Edit::ArtifactTag { id: top, include_descendants: true }] })
+            .collect(),
+    };
+    let error = s.apply(id, nested).unwrap_err();
+    assert!(error.to_string().contains("artifact batch exceeds"));
+    assert_eq!(s.get(id).unwrap().bytes, before);
+    assert_eq!(s.get(id).unwrap().tags().unwrap(), tree);
+    assert_eq!(s.get(id).unwrap().can_undo().map(str::to_owned), history);
+    assert_eq!(s.get(id).unwrap().object_identity_generation(), epoch);
+}
+
+#[test]
+fn artifact_batch_budget_counts_encoded_bytes_overlay_streams_and_nested_actions() {
+    use pdfcraft_cos::{Dict, Document, Object, Stream};
+    let mut cos = Document::new_empty();
+    let id = ObjRef::new(10, 0);
+    let single = Edit::ArtifactTag { id, include_descendants: false };
+    let pair = Edit::Batch {
+        label: "pair".into(),
+        edits: vec![single.clone(), Edit::Batch { label: "nested".into(), edits: vec![Edit::MarkDecorative { figure: id.num }] }],
+    };
+    let objects = cos.object_numbers().len();
+    let boundary_kib = ARTIFACT_BATCH_WORK_LIMIT / 2 - objects;
+    assert!(validate_artifact_batch_workload(&cos, &pair, boundary_kib * 1024).is_ok());
+    assert!(validate_artifact_batch_workload(&cos, &pair, boundary_kib * 1024 + 1).is_err());
+    assert!(validate_artifact_batch_workload(&cos, &pair, ARTIFACT_BATCH_ENCODED_BYTE_LIMIT / 2 + 1).is_err());
+    assert!(validate_artifact_batch_workload(&cos, &single, usize::MAX).is_ok(), "ordinary singles retain their own converter limits");
+    // A low serialized-byte estimate must not hide unsaved inserted content. Many
+    // repetitions keep this regression small while exceeding the aggregate stream budget.
+    cos.add(Object::Stream(Stream::from_raw(Dict::new(), vec![b' '; 1024 * 1024])));
+    let batch = Edit::Batch { label: "overlay".into(), edits: vec![single; 129] };
+    assert!(validate_artifact_batch_workload(&cos, &batch, 0).is_err());
+}
+
+#[test]
+fn nested_artifact_and_legacy_actions_share_one_decoded_budget() {
+    use pdfcraft_cos::{Dict, Object, Stream};
+    let mut cos = pdfcraft_cos::Document::open(Arc::new(fixture(1))).unwrap();
+    let top = a11y::tags::create(&mut cos, None, 0, &a11y::tags::TagProperties::default()).unwrap();
+    let properties = a11y::tags::TagProperties { role: Some("Figure".into()), ..Default::default() };
+    let first = a11y::tags::create(&mut cos, Some(top), 0, &properties).unwrap();
+    let second = a11y::tags::create(&mut cos, Some(top), 1, &properties).unwrap();
+    let page = pdfcraft_model::pages(&cos)[0].obj;
+    let content = cos.add(Object::Stream(Stream::from_raw(
+        Dict::new(),
+        b"/Figure <</MCID 0>> BDC 10 10 20 20 re f EMC /Figure <</MCID 1>> BDC 40 40 20 20 re f EMC".to_vec(),
+    )));
+    cos.update_dict(page, |d| {
+        d.set(b"Contents", Object::Ref(content));
+        d.set(b"StructParents", Object::Int(0));
+    })
+    .unwrap();
+    for (tag, mcid) in [(first, 0), (second, 1)] {
+        cos.update_dict(tag, |d| {
+            d.set(b"Pg", Object::Ref(page));
+            d.set(b"K", Object::Int(mcid));
+        })
+        .unwrap();
+    }
+    let root = a11y::tags::inspect(&cos).unwrap().root.unwrap();
+    let mut pt = Dict::new();
+    pt.set(b"Nums", Object::Array(vec![Object::Int(0), Object::Array(vec![Object::Ref(first), Object::Ref(second)])]));
+    cos.update_dict(root, |d| d.set(b"ParentTree", Object::Dict(pt))).unwrap();
+    let first_edit = Edit::ArtifactTag { id: first, include_descendants: false };
+    // Find the exact small allowance needed for one conversion, without depending on
+    // how many internal decoding/copy stages the implementation currently uses.
+    let mut low = 0usize;
+    let mut high = 4096usize;
+    while low < high {
+        let middle = low + (high - low) / 2;
+        let mut candidate = cos.clone();
+        let mut cx = EditCtx::new(None, 0);
+        cx.artifact_budget = a11y::artifact::ArtifactBudget::new(middle);
+        if run_edit(&mut candidate, &first_edit, &mut cx).is_ok() {
+            high = middle;
+        } else {
+            low = middle + 1;
+        }
+    }
+    assert!(low < 4096);
+    let mut one = cos.clone();
+    let mut cx = EditCtx::new(None, 0);
+    cx.artifact_budget = a11y::artifact::ArtifactBudget::new(low);
+    run_edit(&mut one, &first_edit, &mut cx).unwrap();
+    let batch = Edit::Batch {
+        label: "artifact selection".into(),
+        edits: vec![first_edit, Edit::Batch { label: "nested legacy".into(), edits: vec![Edit::MarkDecorative { figure: second.num }] }],
+    };
+    let original = pdfcraft_cos::write_full(&cos, &Default::default()).unwrap();
+    let mut candidate = cos.clone();
+    let mut cx = EditCtx::new(None, 0);
+    cx.artifact_budget = a11y::artifact::ArtifactBudget::new(low);
+    let error = run_edit(&mut candidate, &batch, &mut cx).unwrap_err();
+    assert!(error.to_string().contains("budget"));
+    // Session::apply commits only a successful candidate, so even a later nested failure
+    // cannot publish the first successful conversion or create a partial history step.
+    assert_eq!(pdfcraft_cos::write_full(&cos, &Default::default()).unwrap(), original);
+    let tree = a11y::tags::inspect(&cos).unwrap();
+    assert!(tree.element(first).is_some() && tree.element(second).is_some());
+}

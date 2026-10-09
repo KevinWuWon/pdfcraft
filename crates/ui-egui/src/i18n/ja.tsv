@@ -1975,6 +1975,9 @@
 	Choose a PNG or JPEG image (up to 4 MiB). Transparency is preserved.	PNG または JPEG 画像を選択してください（最大 4 MiB）。透明度は保持されます。
 	Couldn't import the signature image: {e}	署名画像を読み込めませんでした: {e}
 	Go to page…	ページへ移動…
+
+# Accessibility tag editor command and upstream attribution.
+	Edit document tags	文書タグを編集
 	Based on PdfCraft by the ArtCraft team.	ArtCraft チームによる PdfCraft を基にしています。
 	Upstream Discord	開発元の Discord
 	Upstream community	開発元のコミュニティ

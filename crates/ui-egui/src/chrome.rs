@@ -236,6 +236,7 @@ fn main_menu(app: &mut PdfCraftApp, ui: &mut egui::Ui) {
                     (RightPanel::Attachments, tl!("Attachments")),
                     (RightPanel::Signatures, tl!("Signatures")),
                     (RightPanel::Accessibility, tl!("Accessibility Checker")),
+                    (RightPanel::Tags, tl!("Accessibility tags")),
                     (RightPanel::Search, tl!("Search")),
                     (RightPanel::Compare, tl!("Compare")),
                 ] {
@@ -283,6 +284,7 @@ pub fn right_rail(app: &mut PdfCraftApp, ui: &mut egui::Ui) {
             };
             rail_button(ui, RightPanel::Comments, "message-square-text", "Comments", has_comments);
             rail_button(ui, RightPanel::Bookmarks, "bookmark", "Bookmarks", has_outline);
+            rail_button(ui, RightPanel::Tags, "tag", "Accessibility tags", false);
             rail_button(ui, RightPanel::Pages, "files", "Page thumbnails", false);
             rail_button(ui, RightPanel::Fields, "text-cursor-input", "Form fields", has_fields);
             rail_button(ui, RightPanel::Layers, "layers", "Layers", has_layers);

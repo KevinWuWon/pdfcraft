@@ -13,11 +13,13 @@ use std::collections::BTreeSet;
 use pdfcraft_cos::Document;
 
 mod alt;
+pub mod artifact;
 mod content;
 mod report;
 mod structure;
+pub mod tags;
 
-pub use alt::{AltError, Figure, figures, mark_decorative, set_alt};
+pub use alt::{AltError, Figure, figures, mark_decorative, mark_decorative_with_budget, set_alt};
 pub use report::report_html;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]

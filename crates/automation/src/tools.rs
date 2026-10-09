@@ -26,6 +26,45 @@ fn doc() -> Value {
     json!({ "type": "integer", "minimum": 1, "description": "Document id from doc_open or doc_list." })
 }
 
+fn tag_ref() -> Value {
+    schema(
+        json!({
+            "number": { "type": "integer", "minimum": 1, "maximum": 4294967295u64 },
+            "generation": { "type": "integer", "minimum": 0, "maximum": 65535 }
+        }),
+        &["number", "generation"],
+    )
+}
+
+fn tag_schema(action: &str) -> Value {
+    let mut props = json!({ "doc": doc() });
+    let mut required = vec!["doc"];
+    if action != "inspect" && action != "create" {
+        props["id"] = tag_ref();
+        required.push("id");
+    }
+    if action == "create" || action == "move" {
+        props["parent"] = tag_ref();
+        props["parent"]["description"] = json!("Parent tag identity; omit for the structure-tree root.");
+        props["position"] = json!({ "type": "integer", "minimum": 1, "description": "1-based position among ALL mixed kids, including content references. For moves, measured after removal from the old parent." });
+        required.push("position");
+    }
+    if action == "create" || action == "update" {
+        props["role"] = json!({ "type": "string", "minLength": 1, "description": "PDF structure role, for example P, H1, Figure or a role mapped in the document." });
+        for key in ["title", "alt", "actual_text", "lang", "expansion"] {
+            props[key] = json!({ "type": ["string", "null"], "description": "Omit to keep unchanged; null clears; a string sets the property." });
+        }
+        if action == "create" {
+            required.push("role");
+        }
+    }
+    if action == "delete" {
+        props["mode"] = json!({ "type": "string", "enum": ["unwrap", "subtree"], "description": "unwrap replaces the tag with its kids; subtree removes all descendant tags and associations, never page drawing content." });
+        required.push("mode");
+    }
+    schema(props, &required)
+}
+
 fn pages(what: &str) -> Value {
     json!({ "type": "array", "items": { "type": "integer", "minimum": 1 }, "minItems": 1, "description": format!("1-based page numbers {what}.") })
 }
@@ -752,6 +791,32 @@ pub fn tools() -> Vec<ToolDef> {
                 }),
                 &["doc", "folder"],
             )),
+        t("accessibility_tag_content", "Inspect tagged page content", "Read marked-content text and primitive bounding regions in displayed-page points, top-left origin. Match items by exact page/stream/MCID identity and objects by object identity from accessibility_tags. Bounding regions are not precise painted-pixel hit tests; issues report incomplete coverage. Does not mutate or tag content.")
+            .ro().with(schema(json!({ "doc": doc(), "page": { "type": "integer", "minimum": 1 } }), &["doc", "page"])),
+        t("accessibility_tags_find", "Find tags from selection", "Find all direct tag owners whose exact page/stream/MCID or OBJR geometry intersects selection rectangles. Regions are page-view points [left,top,right,bottom], top-left origin. A zero-size rectangle is a point. Ambiguous selection returns all owners; issues are retained even without matches. Uses primitive envelopes, not exact pixel hit testing.")
+            .ro().with(schema(json!({ "doc": doc(), "page": { "type": "integer", "minimum": 1 }, "regions": { "type": "array", "minItems": 1, "maxItems": 4096, "items": { "type": "array", "minItems": 4, "maxItems": 4, "items": { "type": "number" } } } }), &["doc", "page", "regions"])),
+        t("accessibility_tags_move", "Move selected tags", "Atomically move tags in document order. Selected descendants of selected ancestors are covered by the ancestor. Position is 1-based among mixed children after removing all selected roots. Undoable.")
+            .with(schema(json!({"doc":doc(),"ids":{"type":"array","minItems":1,"maxItems":4096,"items":tag_ref()},"parent":tag_ref(),"position":{"type":"integer","minimum":1}}), &["doc","ids","position"])),
+        t("accessibility_tags_delete", "Delete selected tags", "Atomically unwrap or delete selected tags. Subtree deletion collapses selected descendants; unwrap removes every selected tag deepest first. Never deletes page artwork. Undoable in one step.")
+            .destructive().with(schema(json!({"doc":doc(),"ids":{"type":"array","minItems":1,"maxItems":4096,"items":tag_ref()},"mode":{"type":"string","enum":["unwrap","subtree"]}}), &["doc","ids","mode"])),
+        t("accessibility_tag_identifier_set", "Set tag identifier", "Set or clear a tag ID and its IDTree entry atomically. Preserves raw-byte name ordering and original nodes. Duplicate IDs, malformed name trees, Headers and structure destinations are refused. External fragment links may break and cannot be discovered or updated. Null clears. Undoable.")
+            .with(schema(json!({"doc":doc(),"id":tag_ref(),"identifier":{"type":["string","null"],"minLength":1,"maxLength":1048576}}), &["doc","id","identifier"])),
+        t("accessibility_tag_artifact", "Convert tagged content to artifact", "Convert exactly owned page/Form marked content to Artifact and remove its tag subtree while retaining painting operators. include_descendants false requires a leaf tag; true includes descendants. OBJR, ambiguous/shared Form invocations and unsupported content are refused atomically. Undoable.")
+            .destructive().with(schema(json!({"doc":doc(),"id":tag_ref(),"include_descendants":{"type":"boolean"}}), &["doc","id","include_descendants"])),
+        t("accessibility_role_map_set", "Edit role mapping", "Set a custom role mapping; target null removes it. All mappings must resolve to a standard role. Changes affect every tag with that custom role. Cycles, standard-role overrides and removing a mapping still used are refused. Undoable.")
+            .with(schema(json!({"doc":doc(),"role":{"type":"string","minLength":1,"maxLength":127},"target":{"type":["string","null"],"minLength":1,"maxLength":127}}), &["doc","role","target"])),
+        t("accessibility_tag_content_move", "Move tagged content association", "Move an existing MCID/MCR/OBJR leaf between tags. source_position and position are 1-based mixed-child slots; position is after removal. Preserves page/Form namespace and updates ParentTree ownership; never moves page artwork. Undoable.")
+            .with(schema(json!({"doc":doc(),"source":tag_ref(),"source_position":{"type":"integer","minimum":1},"destination":tag_ref(),"position":{"type":"integer","minimum":1}}), &["doc","source","source_position","destination","position"])),
+        t("accessibility_tags", "Inspect document tags", "Inspect the PDF structure tree with full object identities, ordered mixed kids, role mappings, text properties and diagnostics. Full rewrites/Save As can renumber identities; re-inspect afterward. This does not certify PDF/UA compliance.")
+            .ro().cmd("a11y.tags").with(tag_schema("inspect")),
+        t("accessibility_tag_create", "Create document tag", "Create an empty structure tag at position under parent (omit parent for root). Does not automatically tag page content or establish PDF/UA compliance. Returns document summary, updated tree and created identity. Undoable.")
+            .with(tag_schema("create")),
+        t("accessibility_tag_update", "Update document tag", "Update role/title/alt/actual_text/lang/expansion of the exact tag identity from accessibility_tags. Omitted text properties stay unchanged; null clears. Returns summary and tree. Undoable.")
+            .with(tag_schema("update")),
+        t("accessibility_tag_move", "Move document tag", "Move a tag to parent (omit for root), at a 1-based mixed-kid position measured AFTER removal. Descendants and content references remain attached. Cycles and unsafe structures are refused. Returns summary and tree. Undoable.")
+            .with(tag_schema("move")),
+        t("accessibility_tag_delete", "Delete document tag", "Unwrap a tag or delete its structure subtree. Page drawing content remains; subtree deletion removes its structure associations, not visual content. Unsafe or ambiguous parent-tree changes are refused. Returns summary and tree. Undoable.")
+            .destructive().with(tag_schema("delete")),
         t("accessibility_check", "Check for accessibility", "Run the Accessibility Checker's full check (32 rules in 7 categories: document, page_content, forms, alternate_text, tables, lists, headings). Each rule is passed, failed (with findings and pages), manual (needs a person) or skipped. Colour contrast is off unless all is true; rules (ids such as tagged-pdf, figures-alt-text) or categories narrow the check; pages limit the page rules.")
             .ro()
             .cmd("a11y.check")
@@ -785,7 +850,7 @@ pub fn tools() -> Vec<ToolDef> {
             .ro()
             .cmd("a11y.alt_text")
             .with(schema(json!({ "doc": doc() }), &["doc"])),
-        t("accessibility_set_alt", "Set alternate text", "Set a figure's alternate text (alt; empty or omitted clears it), or mark it decorative (decorative: true: its content becomes an artifact and the figure leaves the tags). figure is a number from accessibility_figures. Returns the figures. Undoable.")
+        t("accessibility_set_alt", "Set alternate text", "Set a figure's alternate text (alt; empty or omitted clears it), or mark it decorative (decorative: true: exact supported content of a leaf figure becomes an artifact and its tag is removed atomically; nested ParentTrees are preserved, while IDTree and ambiguous content reject). figure is a number from accessibility_figures. Returns the figures. Undoable.")
             .cmd("a11y.alt_text")
             .with(schema(json!({ "doc": doc(), "figure": { "type": "integer", "minimum": 1 }, "alt": { "type": "string" }, "decorative": { "type": "boolean" } }), &["doc", "figure"])),
         t("form_merge_data", "Merge data files into spreadsheet", "Collect the field values of form data files (FDF, XFDF) or filled-in PDF forms into one CSV file at path: a column per field name, a row per file. Returns the row and column counts.")
@@ -1072,7 +1137,11 @@ pub(crate) fn check_args(def: &ToolDef, args: &Value) -> Result<(), ToolError> {
         return Err(ToolError::InvalidArgs(format!("{}: unknown argument {k:?} (expected: {})", def.name, known.join(", "))));
     }
     for r in def.input_schema["required"].as_array().into_iter().flatten().filter_map(Value::as_str) {
-        if obj.get(r).is_none_or(Value::is_null) {
+        let types = props.get(r).and_then(|property| property.get("type"));
+        let nullable = types.is_some_and(|types| {
+            types.as_str() == Some("null") || types.as_array().is_some_and(|types| types.iter().any(|kind| kind.as_str() == Some("null")))
+        });
+        if obj.get(r).is_none() || (obj.get(r).is_some_and(Value::is_null) && !nullable) {
             return Err(ToolError::InvalidArgs(format!("{}: missing argument {r}", def.name)));
         }
     }

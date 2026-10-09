@@ -65,6 +65,7 @@ pub(crate) fn show_glyph<'a>(
         return;
     }
 
+    device.text_glyph(glyph);
     device.set_soft_mask(ctx.get().graphics_state.soft_mask.clone());
     device.set_blend_mode(ctx.get().graphics_state.blend_mode);
     let stroke_props = ctx.stroke_props();
