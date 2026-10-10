@@ -97,6 +97,7 @@ pub(crate) fn role_map(ctx: &egui::Context, doc: &Document, tree: &TagTree, stat
     let mut cancel = false;
     let mut edit = None;
     let stale = state.generation != doc.edit_generation() || state.identity_generation != doc.object_identity_generation();
+    let editable = doc.allows_modification() && doc.read_only_reason.is_none() && doc.tag_edit_read_only_reason().is_none();
     egui::Window::new(tl!("Edit role mappings"))
         .id(egui::Id::new("tag_role_map_dialog"))
         .open(&mut open)
@@ -142,6 +143,9 @@ pub(crate) fn role_map(ctx: &egui::Context, doc: &Document, tree: &TagTree, stat
                 tokens.text_muted,
                 i18n::fmt(tl!("{affected} tag(s) currently use this custom role."), &[("affected", &affected.to_string())]),
             );
+            if let Some(reason) = doc.tag_edit_read_only_reason() {
+                ui.label(reason);
+            }
             if stale {
                 ui.label(tl!(
                     "The document changed while this dialog was open. Your draft is kept. Reopen the dialog to work with the current document."
@@ -153,7 +157,7 @@ pub(crate) fn role_map(ctx: &egui::Context, doc: &Document, tree: &TagTree, stat
             ui.separator();
             ui.horizontal(|ui| {
                 if ui
-                    .add_enabled_ui(!stale && !role.is_empty() && !state.target.trim().is_empty(), |ui| {
+                    .add_enabled_ui(editable && !stale && !role.is_empty() && !state.target.trim().is_empty(), |ui| {
                         widgets::pill_button(ui, tl!("Apply mapping"), true)
                     })
                     .inner
@@ -161,7 +165,7 @@ pub(crate) fn role_map(ctx: &egui::Context, doc: &Document, tree: &TagTree, stat
                 {
                     edit = Some(Edit::SetTagRoleMapping { role: role.to_owned(), target: Some(state.target.trim().to_owned()) });
                 }
-                if ui.add_enabled(!stale && tree.role_map.contains_key(role), egui::Button::new(tl!("Remove mapping"))).clicked() {
+                if ui.add_enabled(editable && !stale && tree.role_map.contains_key(role), egui::Button::new(tl!("Remove mapping"))).clicked() {
                     edit = Some(Edit::SetTagRoleMapping { role: role.to_owned(), target: None });
                 }
                 if ui.button(tl!("Cancel")).clicked() {
@@ -264,6 +268,7 @@ pub(crate) fn move_destination(ctx: &egui::Context, doc: &Document, tree: &TagTr
     }
     let source = state.source.as_ref()?;
     let stale = state.generation != doc.edit_generation() || state.identity_generation != doc.object_identity_generation();
+    let editable = doc.allows_modification() && doc.read_only_reason.is_none() && doc.tag_edit_read_only_reason().is_none();
     // Compute excluded subtrees once, rather than walking every ancestor for every row.
     let mut excluded = HashSet::new();
     if let MoveSource::Tags(ids) = source {
@@ -333,6 +338,7 @@ pub(crate) fn move_destination(ctx: &egui::Context, doc: &Document, tree: &TagTr
             ui.weak(tl!("Positions count all siblings, including content leaves. The position is measured after the moving items are removed; the last position appends."));
             let eligible = eligible_destination(tree, source, state.destination);
             let source_exists = valid_source(tree, source);
+            if let Some(reason) = doc.tag_edit_read_only_reason() { ui.label(reason); }
             if stale {
                 ui.label(tl!("The document changed. This move draft is kept, but reopen the dialog before applying so content positions and tag identities can be checked again."));
             } else if !source_exists {
@@ -345,7 +351,7 @@ pub(crate) fn move_destination(ctx: &egui::Context, doc: &Document, tree: &TagTr
             }
             ui.separator();
             ui.horizontal(|ui| {
-                let valid = !stale && source_exists && eligible && state.position >= 1 && state.position <= limit;
+                let valid = editable && !stale && source_exists && eligible && state.position >= 1 && state.position <= limit;
                 if ui.add_enabled_ui(valid, |ui| widgets::pill_button(ui, tl!("Move"), true)).inner.clicked() {
                     let index = state.position.saturating_sub(1);
                     edit = match source {
@@ -370,6 +376,9 @@ mod tests {
             parent,
             role: "P".into(),
             standard_role: "P".into(),
+            namespace: None,
+            namespace_uri: None,
+            standard_namespace_uri: Some(pdfcraft_engine::a11y::tags::PDF_17_NAMESPACE.into()),
             page: None,
             page_index: None,
             expansion: None,

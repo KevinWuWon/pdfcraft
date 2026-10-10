@@ -42,10 +42,14 @@ workspace. A disclosure control expands a tag independently of selection. Search
 ancestors so matches keep their context. Content children retain their original order;
 MCIDs are page/stream-local identities, never inferred from text strings.
 
-The property inspector buffers changes. Apply creates one undo step; Cancel leaves the PDF
-untouched. Reordering and deletion are disabled while a property draft is pending. Each
+Properties opens on demand from the context menu, double-click or F2, keeping the dock's
+height available to the tree. The native egui form buffers changes. Apply creates one undo
+step; Cancel leaves the PDF untouched. Reordering and deletion are disabled while a property draft is pending. Each
 open document retains its own draft, selection, expansion and search state. A full-save
-rewrite or undo/redo invalidates object identities; stale drafts cannot be applied.
+rewrite or undo/redo invalidates mutation drafts and confirmations. Navigation survives
+metadata-only history only when the complete ordered structure identities, namespaces,
+pages and content bindings still match; geometry is recomputed. Otherwise stale selection
+and its status are cleared.
 
 Ctrl/Cmd-click toggles tags; Shift-click or Shift-arrow selects a visible range. Batch
 move and deletion are atomic. Use **Move selected tags…** for a precise destination and
@@ -69,7 +73,9 @@ for painting, including named property lists and Form XObject namespaces. Highli
 joins the tag's page, stream generation and MCID, or its OBJR object identity, to those
 records. It does not match extracted strings or use guessed font-size rectangles.
 
-Outlines are selection envelopes around painted primitives, not pixel masks. Nonrectangular
+Outlines are selection envelopes around painted primitives, not pixel masks. Nearby glyph
+bounds within one exact content identity are grouped for display using bounded baseline
+and spacing checks; original geometry remains unchanged for picking. Nonrectangular
 clipping and other incomplete geometry are disclosed. Select content on page picks a
 point; Find tag from selection uses selected glyph rectangles. Ambiguous hits list every
 matching owning tag rather than silently picking one. All lookup is also available through
@@ -80,8 +86,11 @@ the engine and `accessibility_tags_find` automation tool.
 - Creating an empty tag does not wrap previously untagged page content.
 - Automatic tagging, arbitrary content-to-artifact conversion, table repair, ClassMap
   authoring and new annotation bindings remain separate work.
-- Tag IDs can be edited through the reference-aware engine/automation action below. Reference-sensitive deletion (IDTree, PDF 2.0 namespaces
-  or structure destinations) is rejected until it can be preserved safely.
+- PDF 1.7, PDF 2.0 and supported MathML namespace roles are resolved using each element's
+  own namespace. Existing RoleMap/RoleMapNS data is preserved; namespace-map authoring is
+  not implemented. Unknown or contradictory namespaces remain explicit compatibility limits.
+- Tag IDs and validated IDTree deletion are supported. Changes that would break known
+  ID references, structure destinations or protected associations are refused atomically.
 - Unsupported direct structure dictionaries are reported read-only; malformed graphs are
   never silently normalized. The inspector has traversal and allocation limits.
 - This editor does not certify reading order, alt-text quality, WCAG or PDF/UA conformance.
@@ -115,22 +124,39 @@ index is measured after all selected roots are removed. `DeleteTags` /
 unwrap processes every explicitly selected tag deepest first. Any unsafe member rejects
 the entire operation, including errors discovered after another member was processed.
 
+Moving a page-less tag under a paged parent requires a bounded proof of every changed
+inheritance branch. Empty page-less branches and unbound integer/MCR/OBJR content are refused.
+Explicit valid page bindings on descendant tags shield their unchanged subtrees;
+explicit-page content leaves also keep their exact page, stream and object identities.
+Every newly page-bound container must have no class, bounding-box or Ref attributes;
+only the already-supported Layout/Placement-only attribute dictionary is accepted.
+Incoming structure destinations to a changed container are refused. IDTree validation
+is needed for ID-based destinations, not unrelated moves with no such destination.
+This exception is unavailable when surplus ParentTree associations are being preserved:
+their unreachable owners may inherit through an affected container outside its K graph.
+Already-paged moves still pin the original page. No descendant page binding is rewritten.
+
 `SetTagIdentifier` / `accessibility_tag_identifier_set` changes an ID and its IDTree entry
 together. Existing byte strings remain unchanged, keys are sorted by raw bytes, and
-existing name-tree nodes, indirect arrays and unknown keys survive. Duplicate IDs, stale
-or malformed trees, IDTree/tag mismatches, known table `/Headers` or structure `/SD`
-references and changes requiring removal of an empty non-root leaf are rejected. Direct
-name-tree nodes with indirect arrays are currently read-only. Changing an ID can break
-external fragment links: those references cannot be discovered or rewritten. New IDs
-use PDF text-string encoding; clearing uses `identifier: null`. Ordinary deletion remains
-conservative when an IDTree exists, even after individual IDs are cleared.
+validated name-tree nodes, indirect arrays and unknown keys survive. Duplicate IDs, stale
+or malformed indexes, mismatched tag IDs and aliased storage are rejected. A fresh unrelated
+ID can be added without rewriting existing table or structure-destination references.
+Renaming/removing an ID remains conservative around `/Headers`, `/ContinuedFrom`, `/Ref`
+and `/SD` references. Deletion prunes a validated IDTree while preserving unrelated nodes
+and references; a targeted structure destination prevents deletion. Unknown properties on
+pruned direct index nodes cannot be silently discarded. External fragment links cannot be
+discovered or repaired; changing an ID can break them. New IDs use PDF text-string encoding;
+clearing uses `identifier: null`.
 
 `ArtifactTag` / `accessibility_tag_artifact` converts exactly owned marked-content
 sequences to `/Artifact` and removes the semantic subtree. Unlike ordinary deletion,
 this explicitly changes the content marking while preserving the painting operators.
 `include_descendants: false` requires a leaf tag; true includes descendant tags. OBJR,
 ambiguous or reused Form invocations, unsupported stream layouts and malformed marks are
-rejected. This operation does not automatically repair reading order or certify PDF/UA.
+rejected. A supported Form must have one proven invocation and exact caller resources;
+validated transparent wrappers and selected Span descendants preserve their original
+operators and resource identities. Active masks and private aliases
+remain conservative refusal boundaries. This operation does not automatically repair reading order or certify PDF/UA.
 
 Evidence: backend alias/namespace/IDTree tests; engine transaction/history/render tests;
 automation role-map/batch/content/identifier/artifact tests exercise save, reopen, undo,
@@ -138,19 +164,18 @@ redo, negative arguments, and unchanged rendering for supported artifact convers
 
 The existing alternate-text “mark decorative” action now uses the same exact, atomic
 artifact conversion, after confirming the selected tag is a Figure. It supports validated
-Image XObject drawing inside the figure and nested ParentTrees; IDTree-sensitive figures,
-figure subtrees and ambiguous content are refused without detaching tags or changing
-streams. This closes the older flat-ParentTree-only removal path.
+Image XObject drawing inside the figure, nested ParentTrees and validated IDTree pruning.
+Reference-sensitive figures, figure subtrees requiring broader selection and ambiguous
+content are refused without detaching tags or changing streams. This closes the older flat-ParentTree-only removal path.
 
 ## Workload limits for large selections
 
-Deletion rejects a batch before its working clone when the actual number of repeated
-deletions multiplied by (structure elements + all mixed children, including root children
-+ document objects) exceeds 1,000,000 estimated visits. Subtree mode counts unique selected
-roots after ancestor coverage; unwrap counts every unique selected tag. The rejection is
-atomic and advises smaller batches. A synthetic empty-tag benchmark measured about
-83 ms for 271,800 visits and 255 ms for 753,000 visits on the development executor; these
-are observations, not timing guarantees. Nonempty content can cost more.
+Deletion rejects a batch before its working clone when repeated deletion work exceeds
+1,000,000 estimated visits. The estimate includes structure elements, all mixed children,
+preserved-association work, and up to five whole-document scans measured across direct
+container values as well as indirect objects. Subtree mode counts unique selected roots;
+unwrap counts every unique selected tag. The rejection is atomic and advises smaller
+batches. Individual traversals also have depth, object and allocation bounds.
 
 Every engine Edit::Batch is checked before the document snapshot clone and recursive
 permission/script handling: at most 4,096 edit nodes and 64 nesting levels. This structural
@@ -169,3 +194,22 @@ batches, all selected namespaces, and Form scans. Standalone conversion starts i
 Repeated decoding, page concatenation and replacement output consume the cumulative
 budget before allocation. A refusal leaves content, associations and undo history intact;
 choose a smaller selection or subtree.
+
+## Public-corpus verification
+
+The [support checklist](corpus/support-checklist.md) distinguishes authoring, per-PDF
+regressions, independent validator results and unperformed manual accessibility checks.
+The pinned manifest covers 526 external PDFs; expected-invalid examples retain their
+upstream intent. Strict Figure discovery reports incomplete traversal explicitly rather
+than treating unresolved roles or page associations as an empty successful result.
+
+Preserved unreachable ParentTree owners and globally unclaimed scalar entries are shown
+as warnings. Safe unrelated edits require exact index/owner preservation, bounded global
+claimant checks and a matching post-edit proof. Protected owner/content changes still
+refuse. Shared K or ParentTree storage, stale references and unknown direct-node properties
+are never silently rewritten for another consumer.
+
+Dynamic XFA layout can regenerate pages without remapping existing tags. Tag edits on
+that regenerated representation are disabled with an explicit explanation; form filling
+remains available. This pipeline limitation is reported separately from ordinary roundtrip
+preservation and from PDF/UA conformance.

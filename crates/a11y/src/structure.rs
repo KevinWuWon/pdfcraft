@@ -1,83 +1,31 @@
 //! The structure tree (tags) as the checker needs it, and the rules that read it: alternate
 //! text, tables, lists and headings (ISO 32000-2 §14.7–14.8).
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use pdfcraft_cos::{Dict, Document, ObjRef, Object};
 use pdfcraft_model::Page;
 
 use crate::{Finding, Rule};
 
-/// Standard structure types (PDF 1.7 and 2.0); anything else goes through the role map.
-const STANDARD: &[&[u8]] = &[
-    b"Document",
-    b"DocumentFragment",
-    b"Part",
-    b"Art",
-    b"Sect",
-    b"Div",
-    b"BlockQuote",
-    b"Caption",
-    b"TOC",
-    b"TOCI",
-    b"Index",
-    b"NonStruct",
-    b"Private",
-    b"Aside",
-    b"Title",
-    b"FENote",
-    b"P",
-    b"H",
-    b"H1",
-    b"H2",
-    b"H3",
-    b"H4",
-    b"H5",
-    b"H6",
-    b"L",
-    b"LI",
-    b"Lbl",
-    b"LBody",
-    b"Table",
-    b"TR",
-    b"TH",
-    b"TD",
-    b"THead",
-    b"TBody",
-    b"TFoot",
-    b"Span",
-    b"Quote",
-    b"Note",
-    b"Reference",
-    b"BibEntry",
-    b"Code",
-    b"Link",
-    b"Annot",
-    b"Ruby",
-    b"RB",
-    b"RT",
-    b"RP",
-    b"Warichu",
-    b"WT",
-    b"WP",
-    b"Figure",
-    b"Formula",
-    b"Form",
-    b"Sub",
-    b"Em",
-    b"Strong",
-    b"Artifact",
-];
+/// One allowance for all visited values, including arrays, references and content
+/// leaves. Element-only limits leave huge arrays of invalid values unbounded.
+const MAX_VISITS: usize = 100_000;
+const MAX_DEPTH: usize = 128;
+const MAX_ISSUES: usize = 200;
+const MAX_TABLE_COLUMNS: usize = 10_000;
+const MAX_TABLE_WORK: usize = 1_000_000;
 
-pub(crate) fn is_standard(t: &[u8]) -> bool {
-    STANDARD.contains(&t)
+fn checked_reference(doc: &Document, id: ObjRef) -> Result<std::sync::Arc<Object>, String> {
+    if doc.generation(id.num) != id.generation {
+        return Err("stale structure object generation".into());
+    }
+    doc.try_get(id.num).map_err(|e| format!("unreadable structure object: {e}"))
 }
-
-/// Elements beyond this are not read (a guard against absurd trees).
-const MAX_ELEMENTS: usize = 2_000_000;
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Elem {
+    pub obj: Option<ObjRef>,
     /// The standard type after the role map (or the type as written if it maps to nothing).
     pub ty: Vec<u8>,
     pub parent: Option<usize>,
@@ -96,27 +44,101 @@ pub(crate) struct Elem {
 pub(crate) struct Tree {
     /// A /StructTreeRoot exists.
     pub exists: bool,
+    /// Unsafe role resolution must not turn checker rules into clean empty results.
+    pub issues: Vec<String>,
     pub elems: Vec<Elem>,
     /// Top-level elements in order.
     pub roots: Vec<usize>,
+    table_shapes: BTreeMap<usize, Result<Option<String>, String>>,
 }
 
 impl Tree {
     pub fn read(doc: &Document, pages: &[Page]) -> Tree {
         let mut t = Tree::default();
-        let Some(cat) = doc.root().and_then(|r| doc.get(r).as_dict().cloned()) else { return t };
-        let Some(root) = cat.get(b"StructTreeRoot").map(|o| doc.resolve(o)).and_then(|o| o.as_dict().cloned()) else { return t };
+        let Some(catalog_id) = doc.root() else {
+            t.issue("missing catalog prevents structure inspection");
+            return t;
+        };
+        let catalog = match checked_reference(doc, catalog_id) {
+            Ok(v) => v,
+            Err(e) => {
+                t.issue(e);
+                return t;
+            }
+        };
+        let Object::Dict(cat) = &*catalog else {
+            t.issue("catalog must be a dictionary, not a stream or other object");
+            return t;
+        };
+        let Some(raw) = cat.get(b"StructTreeRoot") else { return t };
+        // Presence is distinct from validity. Malformed present roots cannot be
+        // treated as an ordinary untagged document with clean structure rules.
         t.exists = true;
-        let role_map = root.get(b"RoleMap").map(|o| doc.resolve(o)).and_then(|o| o.as_dict().cloned()).unwrap_or_default();
-        let page_index: HashMap<ObjRef, usize> = pages.iter().enumerate().map(|(i, p)| (p.obj, i)).collect();
-        let mut seen = HashSet::new();
-        let mut reader = Reader { doc, role_map: &role_map, page_index: &page_index, seen: &mut seen };
-        if let Some(k) = root.get(b"K") {
-            let mut roots = Vec::new();
-            reader.kids(&mut t, k, None, None, &mut roots, 0);
-            t.roots = roots;
+        match raw {
+            Object::Ref(id) => match checked_reference(doc, *id) {
+                Ok(value) => match &*value {
+                    Object::Dict(root) => t.read_root(doc, root, pages, Some(*id)),
+                    _ => t.issue("StructTreeRoot must be a dictionary, not a stream or other object"),
+                },
+                Err(e) => t.issue(e),
+            },
+            Object::Dict(root) => t.read_root(doc, root, pages, None),
+            _ => t.issue("StructTreeRoot must be a dictionary, not a stream or other object"),
         }
         t
+    }
+
+    fn issue(&mut self, message: impl Into<String>) {
+        let message = message.into();
+        if self.issues.len() < MAX_ISSUES && !self.issues.contains(&message) {
+            self.issues.push(message);
+        }
+    }
+
+    fn read_root(&mut self, doc: &Document, root: &Dict, pages: &[Page], root_id: Option<ObjRef>) {
+        if root.name(b"Type") != Some(b"StructTreeRoot") {
+            self.issue("StructTreeRoot has missing or invalid Type");
+            return;
+        }
+        if root.len() > MAX_VISITS {
+            self.issue("structure root exceeds safe limits");
+            return;
+        }
+        let resolver = crate::tags::RoleResolver::read(doc, root);
+        if let Err(e) = &resolver {
+            self.issue(e.to_string());
+        }
+        let page_index: HashMap<ObjRef, usize> = pages.iter().enumerate().map(|(i, p)| (p.obj, i)).collect();
+        let mut seen = HashSet::new();
+        if let Some(id) = root_id {
+            seen.insert(id);
+        }
+        let mut reader = Reader { doc, resolver: resolver.as_ref().ok(), page_index: &page_index, seen: &mut seen, remaining: MAX_VISITS };
+        if let Some(k) = root.get(b"K") {
+            let mut roots = Vec::new();
+            reader.kids(self, k, None, None, &mut roots, 0);
+            self.roots = roots;
+        }
+        self.check_tables();
+    }
+
+    /// Table geometry exhaustion only makes regularity uncertain. It does not
+    /// invalidate already confirmed Figure identities or other structural roles.
+    pub fn issues_for(&self, rule: Rule) -> Vec<&str> {
+        let mut issues: Vec<&str> = self.issues.iter().map(String::as_str).collect();
+        if rule == Rule::TableRegularity {
+            issues.extend(self.table_shapes.values().filter_map(|shape| shape.as_ref().err().map(String::as_str)).take(MAX_ISSUES));
+        }
+        issues
+    }
+
+    fn check_tables(&mut self) {
+        let mut work = MAX_TABLE_WORK;
+        for i in 0..self.elems.len() {
+            if self.is(i, b"Table") {
+                self.table_shapes.insert(i, self.irregular(i, &mut work));
+            }
+        }
     }
 
     /// Elements in document (pre-)order.
@@ -223,9 +245,9 @@ impl Tree {
             Rule::TableRegularity => {
                 for &i in &order {
                     if self.is(i, b"Table")
-                        && let Some(why) = self.irregular(i)
+                        && let Some(Ok(Some(why))) = self.table_shapes.get(&i)
                     {
-                        out.push(self.finding(i, &why));
+                        out.push(self.finding(i, why));
                     }
                 }
             }
@@ -251,17 +273,31 @@ impl Tree {
                 }
             }
             Rule::HeadingNesting => {
-                let mut prev = 0u8;
+                let mut prev = "0".to_owned();
                 for &i in &order {
-                    let level = match self.elems[i].ty.as_slice() {
-                        [b'H', d @ b'1'..=b'6'] => d - b'0',
-                        _ => continue,
-                    };
-                    if level > prev + 1 {
-                        let what = if prev == 0 { format!("the first heading is an H{level}") } else { format!("H{level} follows an H{prev}") };
+                    let role = String::from_utf8_lossy(&self.elems[i].ty);
+                    let Some(digits) = role.strip_prefix('H').filter(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit())) else { continue };
+                    let level = digits;
+                    let mut next = prev.as_bytes().to_vec();
+                    let mut carry = true;
+                    for digit in next.iter_mut().rev() {
+                        if *digit == b'9' {
+                            *digit = b'0';
+                        } else {
+                            *digit += 1;
+                            carry = false;
+                            break;
+                        }
+                    }
+                    if carry {
+                        next.insert(0, b'1');
+                    }
+                    let skipped = level.len() > next.len() || (level.len() == next.len() && level.as_bytes() > next.as_slice());
+                    if skipped {
+                        let what = if prev == "0" { format!("the first heading is an H{level}") } else { format!("H{level} follows an H{prev}") };
                         out.push(self.finding(i, &format!("{what}; headings should not skip levels")));
                     }
-                    prev = level;
+                    prev = level.to_owned();
                 }
             }
             _ => {}
@@ -279,8 +315,18 @@ impl Tree {
         self.elems[i].attrs.iter().find_map(|d| d.get(key))
     }
 
-    fn span(&self, i: usize, key: &[u8]) -> usize {
-        self.attr(i, key).and_then(Object::as_int).filter(|n| *n >= 1).map_or(1, |n| n.min(10_000) as usize)
+    fn span(&self, i: usize, key: &[u8]) -> Result<usize, String> {
+        let value = match self.attr(i, key) {
+            None => return Ok(1),
+            Some(Object::Int(n)) if *n >= 1 => usize::try_from(*n).ok(),
+            _ => None,
+        }
+        .ok_or_else(|| "table span is invalid or cannot be represented safely".to_owned())?;
+        let limit = if key == b"ColSpan" { MAX_TABLE_COLUMNS } else { MAX_VISITS };
+        if value > limit {
+            return Err("table span exceeds safe regularity limits".into());
+        }
+        Ok(value)
     }
 
     /// The rows of a table (through THead/TBody/TFoot, not into nested tables) and their cells.
@@ -308,144 +354,330 @@ impl Tree {
         rows
     }
 
-    /// Why the table's rows don't all have the same width, counting row and column spans.
-    fn irregular(&self, table: usize) -> Option<String> {
-        let rows = self.table_rows(table);
-        if rows.len() < 2 {
-            return None;
+    /// One shared work budget for all tables and a hard row-width bound before
+    /// allocation. Never clamp spans and then claim the approximated grid is regular.
+    fn irregular(&self, table: usize, work: &mut usize) -> Result<Option<String>, String> {
+        fn charge(work: &mut usize, amount: usize) -> Result<(), String> {
+            *work = work.checked_sub(amount).ok_or_else(|| "aggregate table regularity work budget exceeded".to_owned())?;
+            Ok(())
         }
-        // carry[c] = rows still covered at column c by a cell above.
+        let rows = self.table_rows(table);
+        charge(work, rows.len())?;
         let mut carry: Vec<usize> = Vec::new();
-        let mut widths = Vec::with_capacity(rows.len());
-        for &row in &rows {
-            let mut col = 0;
+        let mut range: Option<(usize, usize)> = None;
+        for row in rows {
+            let mut col = 0usize;
+            charge(work, carry.len())?;
             let mut next = carry.iter().map(|n| n.saturating_sub(1)).collect::<Vec<_>>();
             for &c in self.elems[row].children.iter().filter(|c| self.is(**c, b"TH") || self.is(**c, b"TD")) {
-                while col < carry.len() && carry[col] > 0 {
-                    col += 1;
+                charge(work, 1)?;
+                while carry.get(col).is_some_and(|n| *n > 0) {
+                    charge(work, 1)?;
+                    col = col.saturating_add(1);
                 }
-                let (cs, rs) = (self.span(c, b"ColSpan"), self.span(c, b"RowSpan"));
-                if next.len() < col + cs {
-                    next.resize(col + cs, 0);
+                let (cs, rs) = (self.span(c, b"ColSpan")?, self.span(c, b"RowSpan")?);
+                let end = col
+                    .checked_add(cs)
+                    .filter(|end| *end <= MAX_TABLE_COLUMNS)
+                    .ok_or_else(|| "table row width exceeds safe regularity limits".to_owned())?;
+                charge(work, cs.saturating_add(end.saturating_sub(next.len())))?;
+                if next.len() < end {
+                    next.resize(end, 0);
                 }
                 for n in next.iter_mut().skip(col).take(cs) {
-                    *n = (*n).max(rs - 1);
+                    *n = (*n).max(rs.saturating_sub(1));
                 }
-                col += cs;
+                col = end;
             }
-            while col < carry.len() && carry[col] > 0 {
-                col += 1;
+            while carry.get(col).is_some_and(|n| *n > 0) {
+                charge(work, 1)?;
+                col = col.saturating_add(1);
             }
-            widths.push(col);
+            range = Some(range.map_or((col, col), |(lo, hi)| (lo.min(col), hi.max(col))));
             carry = next;
         }
-        let (min, max) = (widths.iter().min()?, widths.iter().max()?);
-        (min != max).then(|| format!("rows have between {min} and {max} columns"))
+        Ok(range.filter(|(lo, hi)| lo != hi).map(|(lo, hi)| format!("rows have between {lo} and {hi} columns")))
     }
 }
 
 struct Reader<'a> {
     doc: &'a Document,
-    role_map: &'a Dict,
+    resolver: Option<&'a crate::tags::RoleResolver>,
     page_index: &'a HashMap<ObjRef, usize>,
     seen: &'a mut HashSet<ObjRef>,
+    remaining: usize,
 }
 
 impl Reader<'_> {
-    fn standard(&self, ty: &[u8]) -> Vec<u8> {
-        let mut t = ty.to_vec();
-        for _ in 0..12 {
-            if STANDARD.contains(&t.as_slice()) {
-                return t;
+    fn visit(&mut self, t: &mut Tree, depth: usize) -> bool {
+        if depth > MAX_DEPTH || self.remaining == 0 {
+            t.issue("structure traversal exceeds safe limits");
+            return false;
+        }
+        self.remaining -= 1;
+        true
+    }
+
+    fn page_of(&self, t: &mut Tree, d: &Dict, inherited: Option<usize>) -> Option<usize> {
+        let Some(raw) = d.get(b"Pg") else { return inherited };
+        let Some(id) = raw.as_ref() else {
+            t.issue("structure Pg must be an indirect page reference");
+            return None;
+        };
+        match checked_reference(self.doc, id) {
+            Ok(value) if matches!(&*value, Object::Dict(p) if p.name(b"Type") == Some(b"Page")) => {
+                let page = self.page_index.get(&id).copied();
+                if page.is_none() {
+                    t.issue("structure Pg is not a document page");
+                }
+                page
             }
-            match self.role_map.get(&t).map(|o| self.doc.resolve(o)).and_then(|o| o.as_name().map(<[u8]>::to_vec)) {
-                Some(n) if n != t => t = n,
-                _ => break,
+            _ => {
+                t.issue("structure Pg is stale, unreadable or not a page dictionary");
+                None
             }
         }
-        t
     }
 
-    fn page_of(&self, d: &Dict) -> Option<usize> {
-        d.get(b"Pg").and_then(Object::as_ref).and_then(|r| self.page_index.get(&r).copied())
-    }
-
-    /// Read the kids `k` of `parent` (or of the root), appending element indexes to `out`.
+    /// Read every value, never silently discard a malformed child. Budget checks
+    /// happen before iterating containers; exhaustion stops siblings too.
     fn kids(&mut self, t: &mut Tree, k: &Object, parent: Option<usize>, page: Option<usize>, out: &mut Vec<usize>, depth: usize) {
-        if depth > 256 || t.elems.len() >= MAX_ELEMENTS {
+        if !self.visit(t, depth) {
             return;
         }
         match k {
             Object::Array(a) => {
+                if a.len() > self.remaining {
+                    t.issue("structure child array exceeds remaining traversal budget");
+                    return;
+                }
                 for x in a {
-                    self.kids(t, x, parent, page, out, depth + 1);
+                    if self.remaining == 0 {
+                        t.issue("structure traversal exceeds safe limits");
+                        break;
+                    }
+                    self.kids(t, x, parent, page, out, depth.saturating_add(1));
                 }
             }
-            Object::Int(_) => {
-                if let Some(p) = parent {
+            Object::Int(mcid) => {
+                if *mcid < 0 {
+                    t.issue("structure MCID must be nonnegative");
+                } else if let Some(p) = parent {
                     t.elems[p].content = true;
+                    if page.is_none() {
+                        t.issue("integer MCID has no valid inherited page");
+                    }
+                } else {
+                    t.issue("content item cannot be directly under StructTreeRoot");
                 }
             }
             Object::Ref(r) => {
-                if !self.seen.insert(*r) {
+                let obj = match checked_reference(self.doc, *r) {
+                    Ok(value) => value,
+                    Err(e) => {
+                        t.issue(e);
+                        return;
+                    }
+                };
+                // Identical indirect integers can validly be reused on different pages.
+                if !matches!(&*obj, Object::Int(_)) && !self.seen.insert(*r) {
+                    t.issue("shared or cyclic structure reference");
                     return;
                 }
-                let obj = self.doc.get(*r);
-                if let Some(d) = obj.as_dict() {
-                    self.dict(t, d, parent, page, out, depth);
+                if let Object::Dict(d) = &*obj {
+                    if self.visit(t, depth.saturating_add(1)) {
+                        self.dict(t, d, Some(*r), (parent, page), out, depth.saturating_add(1));
+                    }
+                } else {
+                    self.kids(t, &obj, parent, page, out, depth.saturating_add(1));
                 }
             }
-            Object::Dict(d) => self.dict(t, d, parent, page, out, depth),
-            _ => {}
+            Object::Dict(d) => self.dict(t, d, None, (parent, page), out, depth),
+            Object::Stream(_) => t.issue("structure child must not be a stream"),
+            _ => t.issue("invalid structure child: expected StructElem, MCID, MCR or OBJR"),
         }
     }
 
-    fn dict(&mut self, t: &mut Tree, d: &Dict, parent: Option<usize>, page: Option<usize>, out: &mut Vec<usize>, depth: usize) {
+    fn dict(&mut self, t: &mut Tree, d: &Dict, obj: Option<ObjRef>, context: (Option<usize>, Option<usize>), out: &mut Vec<usize>, depth: usize) {
+        let (parent, page) = context;
+        if d.len() > self.remaining {
+            t.issue("structure dictionary exceeds remaining traversal budget");
+            return;
+        }
+        let page = self.page_of(t, d, page);
         match d.name(b"Type") {
             Some(b"MCR") => {
+                if d.contains(b"S") {
+                    t.issue("MCR must not also declare a structure type S");
+                }
+                if !matches!(d.get(b"MCID"), Some(Object::Int(n)) if *n >= 0) {
+                    t.issue("MCR requires a nonnegative integer MCID");
+                    return;
+                }
+                if let Some(raw) = d.get(b"Stm") {
+                    let valid = raw.as_ref().and_then(|r| checked_reference(self.doc, r).ok()).is_some_and(|v| matches!(&*v, Object::Stream(_)));
+                    if !valid {
+                        t.issue("MCR Stm must be an exact indirect stream reference");
+                        return;
+                    }
+                } else if page.is_none() {
+                    t.issue("MCR has neither a stream nor a valid associated page");
+                }
                 if let Some(p) = parent {
                     t.elems[p].content = true;
+                } else {
+                    t.issue("MCR cannot be directly under StructTreeRoot");
                 }
                 return;
             }
             Some(b"OBJR") => {
+                if d.contains(b"S") {
+                    t.issue("OBJR must not also declare a structure type S");
+                }
+                let Some(id) = d.reference(b"Obj") else {
+                    t.issue("OBJR requires an indirect Obj reference");
+                    return;
+                };
+                let obj = match checked_reference(self.doc, id) {
+                    Ok(v) if matches!(&*v, Object::Dict(_) | Object::Stream(_)) => v,
+                    _ => {
+                        t.issue("OBJR Obj is stale, missing or not a dictionary/stream");
+                        return;
+                    }
+                };
+                if page.is_none() {
+                    t.issue("OBJR has no valid associated page");
+                }
                 if let Some(p) = parent {
                     t.elems[p].content = true;
-                    if let Some(o) = d.get(b"Obj").and_then(Object::as_ref)
-                        && self.doc.get(o).as_dict().is_some_and(|a| a.contains(b"Subtype") && a.contains(b"Rect"))
-                    {
-                        t.elems[p].annots.push(o);
+                    if obj.as_dict().is_some_and(|a| a.contains(b"Subtype") && a.contains(b"Rect")) {
+                        t.elems[p].annots.push(id);
                     }
+                } else {
+                    t.issue("OBJR cannot be directly under StructTreeRoot");
                 }
                 return;
             }
-            _ => {}
+            Some(b"StructElem") | None => {}
+            _ => t.issue("structure element has invalid Type"),
         }
-        let Some(s) = d.name(b"S") else { return };
-        let page = self.page_of(d).or(page);
-        let text =
-            |k: &[u8]| d.get(k).map(|o| self.doc.resolve(o)).and_then(|o| o.as_string().map(|s| !s.to_text().trim().is_empty())).unwrap_or(false);
-        let mut attrs = Vec::new();
-        if let Some(a) = d.get(b"A").map(|o| self.doc.resolve(o)) {
-            let list = match &*a {
-                Object::Array(v) => v.clone(),
-                other => vec![other.clone()],
-            };
-            for x in list {
-                if let Some(ad) = self.doc.resolve(&x).as_dict() {
-                    attrs.push(ad.clone());
-                }
+        if !d.contains(b"S") {
+            t.issue("structure element is missing S");
+            return;
+        }
+        let ty = match self.resolver.map(|r| r.resolve(self.doc, d)) {
+            Some(Ok((role, _))) => role.into_bytes(),
+            Some(Err(error)) => {
+                t.issue(error.to_string());
+                Vec::new()
             }
+            None => Vec::new(),
+        };
+        let alt = [b"Alt".as_slice(), b"ActualText"].iter().fold(false, |present, key| {
+            let valid = d.get(key).is_some_and(|raw| self.text_present(t, raw, depth.saturating_add(1)));
+            present || valid
+        });
+        let mut attrs = Vec::new();
+        if let Some(a) = d.get(b"A") {
+            self.attributes(t, a, &mut attrs, &mut HashSet::new(), depth.saturating_add(1));
         }
         let i = t.elems.len();
-        t.elems.push(Elem { ty: self.standard(s), parent, alt: text(b"Alt") || text(b"ActualText"), page, attrs, ..Elem::default() });
+        t.elems.push(Elem { obj, ty, parent, alt, page, attrs, ..Elem::default() });
         if let Some(p) = parent {
             t.elems[p].children.push(i);
         }
         out.push(i);
         if let Some(k) = d.get(b"K") {
             let mut ignored = Vec::new();
-            self.kids(t, k, Some(i), page, &mut ignored, depth + 1);
+            self.kids(t, k, Some(i), page, &mut ignored, depth.saturating_add(1));
+        }
+    }
+
+    fn text_present(&mut self, t: &mut Tree, raw: &Object, depth: usize) -> bool {
+        if !self.visit(t, depth) {
+            return false;
+        }
+        match raw {
+            Object::Ref(id) => match checked_reference(self.doc, *id) {
+                Ok(value) => self.text_present(t, &value, depth.saturating_add(1)),
+                Err(e) => {
+                    t.issue(e);
+                    false
+                }
+            },
+            Object::String(s) if s.bytes.len() <= 1_048_576 => !s.to_text().trim().is_empty(),
+            _ => {
+                t.issue("alternate/actual text must be a bounded string");
+                false
+            }
+        }
+    }
+
+    fn span_value(&mut self, t: &mut Tree, raw: &Object, depth: usize) -> Option<i64> {
+        if !self.visit(t, depth) {
+            return None;
+        }
+        match raw {
+            Object::Int(n) if *n >= 1 => Some(*n),
+            Object::Ref(id) => match checked_reference(self.doc, *id) {
+                Ok(value) => self.span_value(t, &value, depth.saturating_add(1)),
+                Err(e) => {
+                    t.issue(e);
+                    None
+                }
+            },
+            _ => {
+                t.issue("table span attribute must be a positive integer");
+                None
+            }
+        }
+    }
+
+    fn attributes(&mut self, t: &mut Tree, raw: &Object, out: &mut Vec<Dict>, path: &mut HashSet<ObjRef>, depth: usize) {
+        if !self.visit(t, depth) {
+            return;
+        }
+        match raw {
+            Object::Ref(id) => {
+                if !path.insert(*id) {
+                    t.issue("cyclic structure attributes");
+                    return;
+                }
+                match checked_reference(self.doc, *id) {
+                    Ok(v) => self.attributes(t, &v, out, path, depth.saturating_add(1)),
+                    Err(e) => t.issue(e),
+                }
+                path.remove(id);
+            }
+            Object::Array(values) => {
+                if values.len() > self.remaining {
+                    t.issue("structure attribute array exceeds remaining traversal budget");
+                    return;
+                }
+                for value in values {
+                    if self.remaining == 0 {
+                        t.issue("structure attributes exceed safe limits");
+                        break;
+                    }
+                    self.attributes(t, value, out, path, depth.saturating_add(1));
+                }
+            }
+            Object::Dict(d) if d.len() <= self.remaining => {
+                // Only these attributes feed checker rules. Do not clone arbitrary
+                // unknown nested containers merely to inspect table dimensions.
+                let mut checked = Dict::new();
+                if d.contains(b"Summary") {
+                    checked.set(b"Summary", Object::Bool(true));
+                }
+                for key in [b"RowSpan".as_slice(), b"ColSpan"] {
+                    if let Some(raw) = d.get(key) {
+                        checked.set(key, self.span_value(t, raw, depth.saturating_add(1)).map(Object::Int).unwrap_or(Object::Null));
+                    }
+                }
+                out.push(checked);
+            }
+            Object::Int(n) if *n >= 0 => {} // Attribute revision number.
+            _ => t.issue("invalid or oversized structure attribute object"),
         }
     }
 }

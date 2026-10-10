@@ -1,10 +1,10 @@
 //! Add alternate text: the document's figures one by one, their alternate text, and marking a
 //! figure as decorative (its content becomes an artifact and its tag goes away).
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 use pdfcraft_content::Matrix;
-use pdfcraft_cos::{Dict, Document, ObjRef, Object, PdfString};
+use pdfcraft_cos::{Dict, Document, ObjRef, Object};
 
 /// A Figure element (after the role map).
 #[derive(Clone, Debug, PartialEq)]
@@ -29,62 +29,14 @@ pub enum AltError {
     Cos(#[from] pdfcraft_cos::CosError),
 }
 
-fn tree_root(doc: &Document) -> Option<Dict> {
-    let cat = doc.root().and_then(|r| doc.get(r).as_dict().cloned())?;
-    cat.get(b"StructTreeRoot").map(|o| doc.resolve(o)).and_then(|o| o.as_dict().cloned())
-}
-
-/// The standard type of a structure type through the role map.
-fn standard(doc: &Document, role_map: &Dict, s: &[u8]) -> Vec<u8> {
-    let mut t = s.to_vec();
-    for _ in 0..12 {
-        if crate::structure::is_standard(&t) {
-            break;
-        }
-        match role_map.get(&t).map(|o| doc.resolve(o)).and_then(|o| o.as_name().map(<[u8]>::to_vec)) {
-            Some(n) if n != t => t = n,
-            _ => break,
-        }
+/// Shared checker traversal rejects malformed-present trees rather than silently
+/// turning missing/invalid children into an empty list of figures.
+fn checked_tree(doc: &Document, pages: &[pdfcraft_model::Page]) -> Result<crate::structure::Tree, AltError> {
+    let tree = crate::structure::Tree::read(doc, pages);
+    if let Some(issue) = tree.issues.first() {
+        return Err(crate::tags::TagError::Invalid(format!("cannot enumerate figures: {issue}")).into());
     }
-    t
-}
-
-/// Indirect structure elements in document order, with their page.
-fn elements(doc: &Document) -> Vec<(ObjRef, Dict, Option<ObjRef>)> {
-    let Some(root) = tree_root(doc) else { return Vec::new() };
-    let mut out = Vec::new();
-    let mut seen = HashSet::new();
-    let mut stack: Vec<(Object, Option<ObjRef>)> = root.get(b"K").map(|k| vec![(k.clone(), None)]).unwrap_or_default();
-    while let Some((k, pg)) = stack.pop() {
-        if out.len() > 1_000_000 {
-            break;
-        }
-        match k {
-            Object::Array(a) => stack.extend(a.into_iter().rev().map(|x| (x, pg))),
-            Object::Ref(r) => {
-                if !seen.insert(r) {
-                    continue;
-                }
-                let Some(d) = doc.get(r).as_dict().cloned() else { continue };
-                if d.contains(b"S") {
-                    let pg = d.get(b"Pg").and_then(Object::as_ref).or(pg);
-                    if let Some(kids) = d.get(b"K") {
-                        stack.push((kids.clone(), pg));
-                    }
-                    out.push((r, d, pg));
-                }
-            }
-            Object::Dict(d) if d.contains(b"S") => {
-                // Direct elements can't be addressed; their indirect children still can.
-                let pg = d.get(b"Pg").and_then(Object::as_ref).or(pg);
-                if let Some(kids) = d.get(b"K") {
-                    stack.push((kids.clone(), pg));
-                }
-            }
-            _ => {}
-        }
-    }
-    out
+    Ok(tree)
 }
 
 /// The marked-content ids an element owns directly.
@@ -107,23 +59,68 @@ fn mcids(d: &Dict) -> Vec<i64> {
     out
 }
 
-fn page_content(doc: &Document, page: &Dict) -> Vec<u8> {
-    let Some(c) = page.get(b"Contents") else { return Vec::new() };
-    match &*doc.resolve(c) {
-        Object::Stream(s) => s.decoded().unwrap_or_default(),
-        Object::Array(a) => a
-            .iter()
-            .flat_map(|x| match &*doc.resolve(x) {
-                Object::Stream(s) => {
-                    let mut v = s.decoded().unwrap_or_default();
-                    v.push(b'\n');
-                    v
+const BBOX_DECODE_BUDGET: usize = 32 * 1024 * 1024;
+const BBOX_OBJECT_LIMIT: usize = 10_000;
+
+/// The budget covers every stream in the concatenation and every figure in the
+/// discovery call. No partial content is used to produce a misleading rectangle.
+fn page_content(doc: &Document, page: &Dict, remaining: &mut usize) -> Option<Vec<u8>> {
+    fn append(doc: &Document, raw: &Object, out: &mut Vec<u8>, remaining: &mut usize, visits: &mut usize, depth: usize) -> Option<()> {
+        if depth > 128 || *visits >= BBOX_OBJECT_LIMIT {
+            return None;
+        }
+        *visits = visits.checked_add(1)?;
+        match raw {
+            Object::Ref(id) => {
+                if doc.generation(id.num) != id.generation {
+                    return None;
                 }
-                _ => Vec::new(),
-            })
-            .collect(),
-        _ => Vec::new(),
+                let object = doc.try_get(id.num).ok()?;
+                append(doc, &object, out, remaining, visits, depth.saturating_add(1))
+            }
+            Object::Array(values) => {
+                if values.len() > BBOX_OBJECT_LIMIT.saturating_sub(*visits) {
+                    return None;
+                }
+                for value in values {
+                    append(doc, value, out, remaining, visits, depth.saturating_add(1))?;
+                }
+                Some(())
+            }
+            Object::Stream(s) => {
+                let allowance = remaining.checked_sub(1)?;
+                if s.raw.len() > BBOX_DECODE_BUDGET || s.dict.contains(b"F") {
+                    return None;
+                }
+                for key in [b"Filter".as_slice(), b"DecodeParms"] {
+                    if s.dict.get(key).is_some_and(|v| matches!(v, Object::Array(a) if a.len() > 64)) {
+                        return None;
+                    }
+                }
+                crate::artifact::validate_decode_parameters(s, &mut crate::artifact::ArtifactBudget::default()).ok()?;
+                let chain = s.filters();
+                let bytes = if chain.is_empty() {
+                    if s.raw.len() > allowance {
+                        return None;
+                    }
+                    s.raw.as_ref().clone()
+                } else {
+                    pdfcraft_filters::decode(&chain, &s.raw, allowance).ok()?
+                };
+                let consumed = bytes.len().checked_add(1)?;
+                *remaining = remaining.checked_sub(consumed)?;
+                out.extend_from_slice(&bytes);
+                out.push(b'\n');
+                Some(())
+            }
+            _ => None,
+        }
     }
+    let mut out = Vec::new();
+    if let Some(c) = page.get(b"Contents") {
+        append(doc, c, &mut out, remaining, &mut 0, 0)?;
+    }
+    Some(out)
 }
 
 fn union(a: Option<[f64; 4]>, b: [f64; 4]) -> [f64; 4] {
@@ -134,14 +131,14 @@ fn union(a: Option<[f64; 4]>, b: [f64; 4]) -> [f64; 4] {
 }
 
 /// Where the marked content `ids` is drawn on a page (images, forms and paths).
-fn content_bbox(doc: &Document, page: &Dict, ids: &HashSet<i64>) -> Option<[f64; 4]> {
+fn content_bbox(doc: &Document, page: &Dict, ids: &HashSet<i64>, remaining: &mut usize) -> Option<[f64; 4]> {
     let res = page.get(b"Resources").map(|r| doc.resolve(r)).and_then(|r| r.as_dict().cloned()).unwrap_or_default();
     let xobjects = res.get(b"XObject").map(|x| doc.resolve(x)).and_then(|x| x.as_dict().cloned()).unwrap_or_default();
     let mut ctm = vec![Matrix([1.0, 0.0, 0.0, 1.0, 0.0, 0.0])];
     let mut marks: Vec<bool> = Vec::new();
     let mut bbox = None;
     let mut path: Vec<(f64, f64)> = Vec::new();
-    for op in pdfcraft_content::parse(&page_content(doc, page)).ops {
+    for op in pdfcraft_content::parse(&page_content(doc, page, remaining)?).ops {
         let inside = marks.iter().any(|m| *m);
         let top = ctm.last().copied().unwrap_or(Matrix([1.0, 0.0, 0.0, 1.0, 0.0, 0.0]));
         match op.op.as_slice() {
@@ -214,43 +211,56 @@ fn content_bbox(doc: &Document, page: &Dict, ids: &HashSet<i64>) -> Option<[f64;
 
 /// The figures, in document order.
 pub fn figures(doc: &Document) -> Vec<Figure> {
-    let Some(root) = tree_root(doc) else { return Vec::new() };
-    let role_map = root.get(b"RoleMap").map(|o| doc.resolve(o)).and_then(|o| o.as_dict().cloned()).unwrap_or_default();
-    let pages = pdfcraft_model::pages(doc);
-    let index: HashMap<ObjRef, usize> = pages.iter().enumerate().map(|(i, p)| (p.obj, i)).collect();
-    elements(doc)
-        .into_iter()
-        .filter(|(_, d, _)| d.name(b"S").is_some_and(|s| standard(doc, &role_map, s) == b"Figure"))
-        .map(|(obj, d, pg)| {
-            let page = pg.and_then(|p| index.get(&p).copied());
-            let alt = d.get(b"Alt").map(|o| doc.resolve(o)).and_then(|o| o.as_string().map(|s| s.to_text()));
-            let ids: HashSet<i64> = mcids(&d).into_iter().collect();
-            let bbox = page.and_then(|p| content_bbox(doc, &pages[p].dict, &ids));
-            Figure { obj, page, alt, bbox }
-        })
-        .collect()
+    // Legacy convenience API; interactive/automation callers use try_figures to expose
+    // unresolved namespaces instead of treating this fallback as proof of no figures.
+    try_figures(doc).unwrap_or_default()
 }
 
-fn check_figure(doc: &Document, obj: ObjRef) -> Result<Dict, AltError> {
-    let root = tree_root(doc).ok_or(AltError::Untagged)?;
-    let role_map = root.get(b"RoleMap").map(|o| doc.resolve(o)).and_then(|o| o.as_dict().cloned()).unwrap_or_default();
-    let d = doc.get(obj).as_dict().cloned().ok_or(AltError::NotAFigure(obj.num))?;
-    match d.name(b"S") {
-        Some(s) if standard(doc, &role_map, s) == b"Figure" => Ok(d),
-        _ => Err(AltError::NotAFigure(obj.num)),
+fn exact_text(doc: &Document, raw: &Object, depth: usize) -> Result<String, AltError> {
+    if depth > 128 {
+        return Err(crate::tags::TagError::Invalid("alternate text reference depth exceeds safe limits".into()).into());
     }
+    match raw {
+        Object::String(s) if s.bytes.len() <= 1_048_576 => Ok(s.to_text()),
+        Object::Ref(id) if doc.generation(id.num) == id.generation => exact_text(doc, &*doc.try_get(id.num)?, depth.saturating_add(1)),
+        _ => Err(crate::tags::TagError::Invalid("alternate text is stale or not a bounded string".into()).into()),
+    }
+}
+
+/// Figure discovery with explicit namespace and traversal diagnostics.
+pub fn try_figures(doc: &Document) -> Result<Vec<Figure>, AltError> {
+    let pages = pdfcraft_model::pages(doc);
+    let tree = checked_tree(doc, &pages)?;
+    let mut figures = Vec::new();
+    let mut remaining = BBOX_DECODE_BUDGET;
+    for e in tree.elems.iter().filter(|e| e.ty == b"Figure") {
+        let obj = e.obj.ok_or_else(|| crate::tags::TagError::Invalid("direct Figure cannot be addressed safely".into()))?;
+        let value = doc.try_get(obj.num)?;
+        let Object::Dict(d) = &*value else {
+            return Err(AltError::NotAFigure(obj.num));
+        };
+        let alt = d.get(b"Alt").map(|raw| exact_text(doc, raw, 0)).transpose()?;
+        let ids: HashSet<i64> = mcids(d).into_iter().collect();
+        let bbox = e.page.and_then(|p| pages.get(p)).and_then(|p| content_bbox(doc, &p.dict, &ids, &mut remaining));
+        figures.push(Figure { obj, page: e.page, alt, bbox });
+    }
+    Ok(figures)
+}
+
+fn check_figure(doc: &Document, obj: ObjRef) -> Result<(), AltError> {
+    let pages = pdfcraft_model::pages(doc);
+    let tree = checked_tree(doc, &pages)?;
+    if !tree.exists {
+        return Err(AltError::Untagged);
+    }
+    if tree.elems.iter().any(|e| e.obj == Some(obj) && e.ty == b"Figure") { Ok(()) } else { Err(AltError::NotAFigure(obj.num)) }
 }
 
 /// Set (or, with `None` or blank text, remove) a figure's alternate text.
 pub fn set_alt(doc: &mut Document, obj: ObjRef, alt: Option<&str>) -> Result<(), AltError> {
     check_figure(doc, obj)?;
     let alt = alt.map(str::trim).filter(|a| !a.is_empty());
-    doc.update_dict(obj, |d| match alt {
-        Some(a) => d.set(b"Alt".to_vec(), Object::String(PdfString::text(a))),
-        None => {
-            d.remove(b"Alt");
-        }
-    })?;
+    crate::tags::update(doc, obj, &crate::tags::TagProperties { alt: Some(alt.map(str::to_owned)), ..Default::default() })?;
     Ok(())
 }
 
@@ -266,4 +276,51 @@ pub fn mark_decorative_with_budget(doc: &mut Document, obj: ObjRef, budget: &mut
     check_figure(doc, obj)?;
     crate::artifact::convert_with_budget(doc, obj, false, budget)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod budget_tests {
+    use super::*;
+    #[test]
+    fn geometry_decode_budget_is_aggregate_and_never_returns_partial_content() {
+        let mut doc = Document::new_empty();
+        let a = doc.add(Object::Stream(pdfcraft_cos::Stream::flate(Dict::new(), b"1234567890")));
+        let b = doc.add(Object::Stream(pdfcraft_cos::Stream::flate(Dict::new(), b"abcdefghij")));
+        let mut page = Dict::new();
+        page.set(b"Contents", Object::Array(vec![Object::Ref(a), Object::Ref(b)]));
+        let mut enough = 22;
+        assert_eq!(page_content(&doc, &page, &mut enough).unwrap(), b"1234567890\nabcdefghij\n");
+        assert_eq!(enough, 0);
+        let mut short = 21;
+        assert!(page_content(&doc, &page, &mut short).is_none());
+        assert_eq!(short, 10, "only first stream was decoded successfully");
+        assert!(content_bbox(&doc, &page, &HashSet::new(), &mut 21).is_none());
+    }
+    #[test]
+    fn geometry_structure_budget_counts_non_stream_containers_and_cycles() {
+        let mut doc = Document::new_empty();
+        let empty = doc.add(Object::Array(Vec::new()));
+        let mut page = Dict::new();
+        page.set(b"Contents", Object::Array(vec![Object::Ref(empty); BBOX_OBJECT_LIMIT]));
+        assert!(page_content(&doc, &page, &mut { BBOX_DECODE_BUDGET }).is_none());
+        doc.set(empty, Object::Array(vec![Object::Ref(empty)]));
+        page.set(b"Contents", Object::Ref(empty));
+        assert!(page_content(&doc, &page, &mut { BBOX_DECODE_BUDGET }).is_none());
+    }
+    #[test]
+    fn geometry_refuses_malformed_filters_and_raw_over_budget_before_copying() {
+        let mut doc = Document::new_empty();
+        let mut dict = Dict::new();
+        dict.set(b"Filter", Object::name("ASCIIHexDecode"));
+        let corrupt = doc.add(Object::Stream(pdfcraft_cos::Stream::from_raw(dict, b"71GG>".to_vec())));
+        let mut page = Dict::new();
+        page.set(b"Contents", Object::Ref(corrupt));
+        assert!(page_content(&doc, &page, &mut 100).is_none());
+        doc.set(corrupt, Object::Stream(pdfcraft_cos::Stream::from_raw(Dict::new(), vec![b'x'; 32])));
+        assert!(page_content(&doc, &page, &mut 16).is_none());
+        let mut malformed = Dict::new();
+        malformed.set(b"Filter", Object::Bool(true));
+        doc.set(corrupt, Object::Stream(pdfcraft_cos::Stream::from_raw(malformed, b"q Q".to_vec())));
+        assert!(page_content(&doc, &page, &mut 100).is_none());
+    }
 }

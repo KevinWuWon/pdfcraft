@@ -8759,7 +8759,7 @@ status = "partial"
 commands = ["a11y.tags"]
 tools = ["accessibility_tags", "accessibility_tag_create", "accessibility_tag_delete", "accessibility_tags_find", "accessibility_tag_artifact", "accessibility_tags_move", "accessibility_tag_content_move"]
 evidence = ["crates/ui-egui/tests/tags.rs::artifact_conversion_removes_exact_tag_and_undo_restores_content", "crates/ui-egui/tests/tags.rs::drag_after_adjacent_sibling_preserves_mixed_child_order"]
-notes = "Native mixed-content tree, multi-selection, creation, atomic moves/deletion, renderer-backed bounds and reverse lookup. Artifact conversion supports exact unambiguous marked content; reused/nested/unsupported streams and OBJR conversion are refused. Creating tags does not tag previously unmarked content. See docs/accessibility/tag-editor.md."
+notes = "Native mixed-content tree, multi-selection, creation, atomic moves/deletion, renderer-backed bounds and reverse lookup. Artifact conversion supports exact unambiguous marked content, validated single-use Forms and narrowly proven transparent wrappers; ambiguous/reused streams and OBJR conversion are refused. Creating tags does not tag previously unmarked content. See docs/accessibility/tag-editor.md."
 
 [[feature]]
 id = "a11y.tag-properties"
@@ -8771,7 +8771,7 @@ status = "shipped"
 commands = ["a11y.tags"]
 tools = ["accessibility_tag_update", "accessibility_tag_identifier_set"]
 evidence = ["crates/ui-egui/tests/tags.rs::edit_properties_persist_and_undo", "crates/ui-egui/tests/tags.rs::identifier_edit_persists_and_undoes"]
-notes = "Buffered type/title/ActualText/Alt/Lang/E edits, reference-aware ID edits, persistent save/reopen and undo. Unsupported structure and reference-sensitive changes fail atomically."
+notes = "On-demand buffered type/title/ActualText/Alt/Lang/E edits, namespace-aware role choices, reference-aware ID edits, persistent save/reopen and undo. Safe metadata patches preserve unrelated input warnings; unsupported structural and reference-sensitive changes fail atomically."
 
 [[feature]]
 id = "a11y.role-map"

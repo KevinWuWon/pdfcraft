@@ -105,7 +105,8 @@ impl Automation {
     pub(crate) fn accessibility_figures(&self, a: &Args) -> Result<Value> {
         let doc = self.doc(a)?;
         let list: Vec<Value> = doc
-            .figures()
+            .try_figures()
+            .map_err(failed)?
             .iter()
             .map(|f| {
                 // Top-left-origin points on the displayed page.

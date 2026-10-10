@@ -2,6 +2,7 @@
 
 use std::process::ExitCode;
 
+mod accessibility_corpus;
 mod assets;
 mod demo_pdf;
 mod fuzz;
@@ -15,6 +16,11 @@ type Command = fn(&[String]) -> anyhow::Result<()>;
 
 /// Every subcommand: name, one-line summary, entry point.
 const COMMANDS: &[(&str, &str, Command)] = &[
+    (
+        "a11y-corpus",
+        "Strict isolated accessibility corpus operations and optional independent oracle; --probe PATH --output NEW_DIR",
+        accessibility_corpus::run,
+    ),
     ("version", "Print the workspace version, or `version set X.Y.Z[-pre]` to change it and refresh Cargo.lock", version_cmd),
     ("layers", "Enforce the crate dependency layering (plan/architecture.md §3)", gates::layers),
     ("wasm", "cargo check --target wasm32-unknown-unknown for every crate below L8", gates::wasm),

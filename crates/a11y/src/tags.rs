@@ -3,6 +3,16 @@
 use pdfcraft_cos::{Dict, Document, ObjRef, Object, PdfString};
 use std::collections::{BTreeMap, BTreeSet};
 
+mod associations;
+mod namespaces;
+#[cfg(test)]
+mod orphan_tests;
+pub(crate) use namespaces::RoleResolver;
+pub use namespaces::{MATHML_NAMESPACE, PDF_17_NAMESPACE, PDF_20_NAMESPACE, TagNamespace, is_standard_role};
+mod id_edit;
+mod parent_storage;
+use id_edit::{check_fresh_id_reference, explicit_subtree_pages, prune_deleted_identifiers, validate_id_index, validate_id_tree_ownership};
+
 const LIMIT: usize = 100_000;
 const DEPTH: usize = 128;
 const DELETE_BATCH_WORK_LIMIT: usize = 1_000_000;
@@ -32,6 +42,11 @@ pub struct TagElement {
     pub parent: Option<ObjRef>,
     pub role: String,
     pub standard_role: String,
+    /// Explicit namespace identity; absent NS never inherits from a parent.
+    pub namespace: Option<ObjRef>,
+    pub namespace_uri: Option<String>,
+    /// Terminal namespace, or None when the role cannot safely be resolved.
+    pub standard_namespace_uri: Option<String>,
     /// Effective page, including inheritance from ancestors.
     pub page: Option<ObjRef>,
     pub page_index: Option<usize>,
@@ -45,14 +60,45 @@ pub struct TagElement {
 }
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct TagTree {
+    /// Declared namespaces, in original array order.
+    pub namespaces: Vec<TagNamespace>,
     pub role_map: BTreeMap<String, String>,
     pub root: Option<ObjRef>,
     pub pages: Vec<ObjRef>,
     pub children: Vec<TagKid>,
     /// Preorder, with persistent indirect object identities.
     pub elements: Vec<TagElement>,
-    /// Unsupported/malformed constructs are visible and block edits.
+    /// All diagnostics, including safely preserved surplus ParentTree associations.
     pub issues: Vec<String>,
+    /// Diagnostics that block structural edits. Preservable associations remain in
+    /// `issues`, but are classified separately rather than filtered by message text.
+    pub edit_blockers: Vec<String>,
+    /// Exact surplus ParentTree slots, classified by their preservation proof.
+    /// Edits preserve these entries and protected owner/child dictionaries.
+    pub preserved_associations: Vec<ParentAssociation>,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ParentAssociationKind {
+    /// Exact live StructElem owner outside the reachable structure tree.
+    UnreachableOwner,
+    /// Scalar key proven globally unclaimed, pointing at a protected reachable tag.
+    UnclaimedScalar,
+}
+impl ParentAssociationKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::UnreachableOwner => "unreachable_owner",
+            Self::UnclaimedScalar => "unclaimed_scalar",
+        }
+    }
+}
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ParentAssociation {
+    pub kind: ParentAssociationKind,
+    pub key: i64,
+    /// None identifies a scalar object association; Some identifies an MCID slot.
+    pub mcid: Option<i64>,
+    pub owner: ObjRef,
 }
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct TagProperties {
@@ -87,8 +133,8 @@ fn dictionary(doc: &Document, id: ObjRef) -> Result<Dict> {
 }
 fn raw_kids(doc: &Document, d: &Dict) -> Result<Vec<Object>> {
     let Some(k) = d.get(b"K") else { return Ok(Vec::new()) };
-    let value = doc.resolve(k);
-    match &*value {
+    let value = namespaces::checked_resolve(doc, k)?;
+    match &value {
         Object::Array(a) if a.len() <= LIMIT => Ok(a.clone()),
         Object::Array(_) => Err(invalid("too many structure children")),
         Object::Null => Err(invalid("null or missing structure child")),
@@ -97,27 +143,6 @@ fn raw_kids(doc: &Document, d: &Dict) -> Result<Vec<Object>> {
 }
 fn text(doc: &Document, d: &Dict, key: &[u8]) -> Option<String> {
     d.get(key).map(|v| doc.resolve(v)).and_then(|v| v.as_string().map(PdfString::to_text))
-}
-fn resolved_role(doc: &Document, map: &Dict, name: &[u8], issues: &mut Vec<String>) -> String {
-    let mut role = name.to_vec();
-    let mut seen = BTreeSet::new();
-    for _ in 0..DEPTH {
-        if !seen.insert(role.clone()) {
-            issues.push("cyclic RoleMap".into());
-            break;
-        }
-        if crate::structure::is_standard(&role) {
-            return String::from_utf8_lossy(&role).into_owned();
-        }
-        let Some(next) = map.get(&role) else { return String::from_utf8_lossy(&role).into_owned() };
-        let next = doc.resolve(next);
-        let Some(next) = next.as_name() else {
-            issues.push("RoleMap value must be a name".into());
-            break;
-        };
-        role = next.to_vec();
-    }
-    String::from_utf8_lossy(&role).into_owned()
 }
 fn classify(doc: &Document, kid: &Object, page: Option<ObjRef>) -> TagKid {
     if let Some(id) = kid.as_ref()
@@ -181,8 +206,10 @@ pub fn inspect(doc: &Document) -> Result<TagTree> {
     {
         tree.issues.push("stale RoleMap generation".into());
     }
-    if let Err(error) = validate_role_map(doc, &role_map) {
-        tree.issues.push(error.to_string());
+    let resolver = RoleResolver::read(doc, &d);
+    match &resolver {
+        Ok(r) => tree.namespaces = r.declared.clone(),
+        Err(e) => tree.issues.push(e.to_string()),
     }
     tree.role_map = role_map
         .iter()
@@ -223,9 +250,6 @@ pub fn inspect(doc: &Document) -> Result<TagTree> {
                     continue;
                 }
                 let d = dictionary(doc, id)?;
-                if d.contains(b"NS") {
-                    tree.issues.push(format!("{id} uses an unsupported PDF 2.0 namespace"));
-                }
                 // ISO 32000 structure element Type is optional; when supplied it must
                 // identify StructElem. Do not normalize valid omitted-Type elements.
                 if d.contains(b"Type") && d.name(b"Type") != Some(b"StructElem") {
@@ -253,11 +277,24 @@ pub fn inspect(doc: &Document) -> Result<TagTree> {
                     tree.issues.push("structure tree exceeds safe inspection limits".into());
                     break;
                 }
+                let resolved = match &resolver {
+                    Ok(r) => match r.resolve(doc, &d) {
+                        Ok(v) => Some(v),
+                        Err(error) => {
+                            tree.issues.push(format!("{id}: {error}"));
+                            None
+                        }
+                    },
+                    Err(_) => None,
+                };
                 let element = TagElement {
                     id,
                     parent,
                     role: String::from_utf8_lossy(name).into_owned(),
-                    standard_role: resolved_role(doc, &role_map, name, &mut tree.issues),
+                    standard_role: resolved.as_ref().map(|v| v.0.clone()).unwrap_or_else(|| String::from_utf8_lossy(name).into_owned()),
+                    namespace: d.reference(b"NS"),
+                    namespace_uri: d.reference(b"NS").and_then(|ns| namespaces::namespace_uri(doc, ns).ok()),
+                    standard_namespace_uri: resolved.map(|v| v.1),
                     page,
                     page_index: page.and_then(|p| page_indices.get(&p).copied()),
                     expansion: text(doc, &d, b"E"),
@@ -276,15 +313,37 @@ pub fn inspect(doc: &Document) -> Result<TagTree> {
             _ => {}
         }
     }
+    tree.edit_blockers = tree.issues.clone();
     match parent_entries(doc, &d) {
-        Ok(entries) => validate_associations(doc, &mut tree, &entries),
-        Err(e) => tree.issues.push(e.to_string()),
+        Ok(entries) => {
+            let report = associations::validate(doc, &tree, &entries);
+            tree.edit_blockers.extend(report.blockers.iter().cloned());
+            tree.issues.extend(report.blockers);
+            for association in &report.preserved {
+                tree.issues.push(match association.kind {
+                    ParentAssociationKind::UnreachableOwner => {
+                        format!("ParentTree key {} refers to unreachable tag {} (preserved association)", association.key, association.owner)
+                    }
+                    ParentAssociationKind::UnclaimedScalar => {
+                        format!(
+                            "ParentTree key {} is globally unclaimed (preserved scalar association to reachable tag {})",
+                            association.key, association.owner
+                        )
+                    }
+                });
+            }
+            tree.preserved_associations = report.preserved;
+        }
+        Err(e) => {
+            tree.issues.push(e.to_string());
+            tree.edit_blockers.push(e.to_string());
+        }
     }
     Ok(tree)
 }
 fn editable(doc: &Document) -> Result<TagTree> {
     let tree = inspect(doc)?;
-    if let Some(issue) = tree.issues.first() {
+    if let Some(issue) = tree.edit_blockers.first() {
         return Err(invalid(format!("cannot edit malformed/unsupported tags: {issue}")));
     }
     Ok(tree)
@@ -331,16 +390,34 @@ fn set_kids(d: &mut Dict, kids: Vec<Object>) {
 
 /// Update only explicitly supplied properties, retaining all other dictionary entries.
 pub fn update(doc: &mut Document, id: ObjRef, p: &TagProperties) -> Result<()> {
-    let tree = editable(doc)?;
-    validate_requested_role(doc, &tree, p)?;
+    if p.role.is_some() {
+        return associations::preserve(doc, |doc| update_inner(doc, id, p));
+    }
+    update_inner(doc, id, p)
+}
+fn update_inner(doc: &mut Document, id: ObjRef, p: &TagProperties) -> Result<()> {
+    let tree = if p.role.is_some() { editable(doc)? } else { inspect(doc)? };
     element(&tree, id)?;
     let mut d = dictionary(doc, id)?;
+    if p.role.is_some() {
+        let root = dictionary(doc, tree.root.ok_or_else(|| invalid("missing structure root"))?)?;
+        let mut candidate = d.clone();
+        properties(&mut candidate, p)?;
+        RoleResolver::read(doc, &root)?.resolve(doc, &candidate)?;
+    } else {
+        namespaces::validate_metadata_target(doc, &tree, id)?;
+        associations::reject_metadata_alias(doc, &tree, id)?;
+    }
     properties(&mut d, p)?;
-    commit_dict(doc, id, d);
+    // Deliberately bypass commit_dict: a text-only patch must not rewrite indirect K.
+    doc.set(id, d);
     Ok(())
 }
 /// Create an empty tag at an ordered child slot. Creates a root on untagged documents.
 pub fn create(doc: &mut Document, parent: Option<ObjRef>, index: usize, p: &TagProperties) -> Result<ObjRef> {
+    associations::preserve(doc, |doc| create_inner(doc, parent, index, p))
+}
+fn create_inner(doc: &mut Document, parent: Option<ObjRef>, index: usize, p: &TagProperties) -> Result<ObjRef> {
     let tree = editable(doc)?;
     validate_requested_role(doc, &tree, p)?;
     let mut d = Dict::new();
@@ -354,7 +431,9 @@ pub fn create(doc: &mut Document, parent: Option<ObjRef>, index: usize, p: &TagP
         let cat_id = doc.root().ok_or_else(|| invalid("missing catalog"))?;
         let mut cat = dictionary(doc, cat_id)?;
         let mut mark = match cat.get(b"MarkInfo") {
-            Some(o) => doc.dict(o).ok_or_else(|| invalid("invalid MarkInfo"))?,
+            Some(Object::Ref(id)) => dictionary(doc, *id)?,
+            Some(Object::Dict(d)) => d.clone(),
+            Some(_) => return Err(invalid("MarkInfo must be a dictionary, not a stream or other object")),
             None => Dict::new(),
         };
         mark.set(b"Marked", Object::Bool(true));
@@ -376,6 +455,7 @@ pub fn create(doc: &mut Document, parent: Option<ObjRef>, index: usize, p: &TagP
     if index > kids.len() {
         return Err(invalid("insertion index exceeds child count"));
     }
+    parent_storage::validate_k_targets(doc, &[pid])?;
     d.set(b"P", Object::Ref(pid));
     let id = doc.add(d);
     kids.insert(index, Object::Ref(id));
@@ -386,6 +466,9 @@ pub fn create(doc: &mut Document, parent: Option<ObjRef>, index: usize, p: &TagP
 
 /// Move within or between parents. Index is in the destination list after removing the tag.
 pub fn move_tag(doc: &mut Document, id: ObjRef, parent: Option<ObjRef>, index: usize) -> Result<()> {
+    associations::preserve(doc, |doc| move_tag_inner(doc, id, parent, index))
+}
+fn move_tag_inner(doc: &mut Document, id: ObjRef, parent: Option<ObjRef>, index: usize) -> Result<()> {
     let tree = editable(doc)?;
     let e = element(&tree, id)?;
     let new_parent = parent_id(&tree, parent)?;
@@ -410,18 +493,25 @@ pub fn move_tag(doc: &mut Document, id: ObjRef, parent: Option<ObjRef>, index: u
     // Pin its old effective page before changing ancestry; descendants retain inheritance.
     if let Some(pg) = e.page {
         moved.set(b"Pg", Object::Ref(pg));
-    } else if parent.and_then(|p| tree.elements.iter().find(|e| e.id == p)).and_then(|e| e.page).is_some() {
+    } else if parent.and_then(|p| tree.elements.iter().find(|e| e.id == p)).and_then(|e| e.page).is_some()
+        && !explicit_subtree_pages(doc, &tree, &[id])?
+    {
         return Err(invalid("move would give page-less content a new inherited page; set a valid page first"));
     }
     moved.set(b"P", Object::Ref(new_parent));
     new_kids.insert(index, raw);
     set_kids(&mut new, new_kids);
+    let mut changes = BTreeMap::new();
     if old_parent != new_parent {
         set_kids(&mut old, old_kids);
-        commit_dict(doc, old_parent, old);
+        changes.insert(old_parent, old);
     }
-    commit_dict(doc, new_parent, new);
-    commit_dict(doc, id, moved);
+    changes.insert(new_parent, new);
+    changes.insert(id, moved);
+    parent_storage::validate_k_rewrites(doc, &changes)?;
+    for (id, value) in changes {
+        commit_dict(doc, id, value);
+    }
     Ok(())
 }
 
@@ -449,7 +539,11 @@ fn read_id_node(
     {
         return Err(invalid("stale, cyclic or shared IDTree node"));
     }
-    let dict = doc.dict(obj).ok_or_else(|| invalid("IDTree node must be a dictionary"))?;
+    let dict = match obj {
+        Object::Ref(id) => dictionary(doc, *id)?,
+        Object::Dict(d) => d.clone(),
+        _ => return Err(invalid("IDTree node must be a dictionary, not a stream or other object")),
+    };
     if depth > 0 && !dict.contains(b"Limits") {
         return Err(invalid("non-root IDTree node requires Limits"));
     }
@@ -521,6 +615,7 @@ fn rewrite_ids(
     cursor: &mut usize,
     leaves: &mut usize,
     changes: &mut BTreeMap<ObjRef, Dict>,
+    arrays: &mut BTreeMap<ObjRef, Object>,
 ) -> Result<(Object, Option<(PdfString, PdfString)>)> {
     let mut d = node.dict.clone();
     let start = *cursor;
@@ -536,7 +631,7 @@ fn rewrite_ids(
     } else {
         let mut children = Vec::new();
         for child in &node.children {
-            children.push(rewrite_ids(child, false, entries, cursor, leaves, changes)?.0);
+            children.push(rewrite_ids(child, false, entries, cursor, leaves, changes, arrays)?.0);
         }
         d.set(b"Kids", Object::Array(children));
     }
@@ -554,8 +649,10 @@ fn rewrite_ids(
     } else {
         // Preserve indirect Names/Kids arrays even under direct dictionary nodes.
         for key in [b"Names".as_slice(), b"Kids"] {
-            if node.dict.reference(key).is_some() {
-                return Err(invalid("direct IDTree nodes with indirect arrays are not editable"));
+            if let Some(id) = node.dict.reference(key) {
+                let value = d.get(key).cloned().ok_or_else(|| invalid("missing rewritten IDTree array"))?;
+                arrays.insert(id, value);
+                d.set(key, Object::Ref(id));
             }
         }
         Ok((Object::Dict(d), range))
@@ -565,6 +662,9 @@ fn rewrite_ids(
 /// existing name-tree nodes, unknown keys and indirect arrays. ID-sensitive references
 /// currently block changes. External fragment links cannot be discovered or rewritten.
 pub fn set_identifier(doc: &mut Document, id: ObjRef, identifier: Option<&str>) -> Result<()> {
+    associations::preserve(doc, |doc| set_identifier_inner(doc, id, identifier))
+}
+fn set_identifier_inner(doc: &mut Document, id: ObjRef, identifier: Option<&str>) -> Result<()> {
     let tree = editable(doc)?;
     element(&tree, id)?;
     let root = tree.root.ok_or_else(|| invalid("missing structure root"))?;
@@ -575,15 +675,16 @@ pub fn set_identifier(doc: &mut Document, id: ObjRef, identifier: Option<&str>) 
         Some(s) => Some(PdfString::text(s)),
         None => None,
     };
-    // Refuse known ID-sensitive destinations and table-header references until they can
-    // be updated alongside the ID. This scan is bounded and does not chase cycles.
+    // Only a fresh unrelated ID may coexist with known references; renames remain strict.
+    let fresh = if td.contains(b"ID") { None } else { new.as_ref() };
+    let mut string_bytes = 0usize;
     let objects = doc.object_numbers();
     if objects.len() > LIMIT {
         return Err(invalid("document too large to verify ID references"));
     }
     let mut budget = 0usize;
     for num in objects {
-        let value = doc.get(ObjRef::new(num, doc.generation(num)));
+        let value = doc.try_get(num).map_err(|e| invalid(format!("cannot verify ID references: {e}")))?;
         let mut stack = vec![(&*value, 0usize)];
         while let Some((value, depth)) = stack.pop() {
             budget = budget.saturating_add(1);
@@ -591,55 +692,31 @@ pub fn set_identifier(doc: &mut Document, id: ObjRef, identifier: Option<&str>) 
                 return Err(invalid("ID reference scan exceeds safe limits"));
             }
             if let Some(d) = value.as_dict() {
-                if d.contains(b"Headers") || d.contains(b"SD") {
-                    return Err(invalid("ID editing with Headers or structure destinations is not supported"));
+                for key in [b"Headers".as_slice(), b"SD", b"ContinuedFrom"] {
+                    if let Some(raw) = d.get(key) {
+                        let Some(new) = fresh else {
+                            return Err(invalid("ID editing with Headers, ContinuedFrom or structure destinations is not supported"));
+                        };
+                        check_fresh_id_reference(doc, key, raw, new, &mut budget, &mut string_bytes)?;
+                    }
                 }
-                stack.extend(d.iter().map(|(_, v)| (v, depth.saturating_add(1))));
-            } else if let Object::Array(a) = value {
-                stack.extend(a.iter().map(|v| (v, depth.saturating_add(1))));
             }
-            if stack.len().saturating_add(budget) > LIMIT {
-                return Err(invalid("ID reference scan exceeds safe limits"));
-            }
+            id_edit::push_scan_children(value, &mut stack, budget, depth)?;
         }
     }
     let mut entries = Vec::new();
     let mut leaves = 0usize;
+    let reserved: BTreeSet<_> = tree.elements.iter().map(|e| e.id).chain(std::iter::once(root)).collect();
+    let mut seen = reserved.clone();
     let node = if let Some(obj) = rd.get(b"IDTree") {
-        let mut seen: BTreeSet<_> = tree.elements.iter().map(|e| e.id).chain(std::iter::once(root)).collect();
         let node = read_id_node(doc, obj, 0, &mut seen, &mut 0, &mut 0)?;
         collect_ids(&node, &mut entries, &mut leaves)?;
         Some(node)
     } else {
         None
     };
-    if entries.windows(2).any(|p| p.first().zip(p.get(1)).is_some_and(|(a, b)| a.0.bytes >= b.0.bytes)) {
-        return Err(invalid("IDTree names must be unique and sorted by raw bytes"));
-    }
-    let mut expected = BTreeMap::new();
-    let mut identifier_bytes = 0usize;
-    for e in &tree.elements {
-        let d = dictionary(doc, e.id)?;
-        if let Some(raw) = d.get(b"ID") {
-            if let Some(r) = raw.as_ref()
-                && doc.generation(r.num) != r.generation
-            {
-                return Err(invalid("stale tag ID generation"));
-            }
-            let raw = doc.resolve(raw);
-            let value = raw.as_string().ok_or_else(|| invalid("tag ID must be a byte string"))?;
-            identifier_bytes = identifier_bytes.saturating_add(value.bytes.len());
-            if value.bytes.len() > 1_048_576 || identifier_bytes > 16_777_216 {
-                return Err(invalid("tag IDs exceed safe limits"));
-            }
-            if expected.insert(value.bytes.clone(), e.id).is_some() {
-                return Err(invalid("duplicate tag ID"));
-            }
-        }
-    }
-    if entries.len() != expected.len() || entries.iter().any(|(name, id)| expected.get(&name.bytes) != Some(id)) {
-        return Err(invalid("IDTree does not exactly match reachable tag IDs"));
-    }
+    let expected = validate_id_index(doc, &tree, &entries)?;
+    validate_id_tree_ownership(doc, &seen.difference(&reserved).copied().collect())?;
     if let Some(new) = &new
         && expected.get(&new.bytes).is_some_and(|owner| *owner != id)
     {
@@ -654,11 +731,12 @@ pub fn set_identifier(doc: &mut Document, id: ObjRef, identifier: Option<&str>) 
     }
     entries.sort_by(|a, b| a.0.bytes.cmp(&b.0.bytes));
     let mut changes = BTreeMap::new();
+    let mut arrays = BTreeMap::new();
     if let Some(node) = node {
         if leaves > 1 && entries.len() < leaves {
             return Err(invalid("ID removal would empty a name-tree leaf; rebalance is not supported"));
         }
-        let (rewritten, _) = rewrite_ids(&node, true, &entries, &mut 0, &mut leaves, &mut changes)?;
+        let (rewritten, _) = rewrite_ids(&node, true, &entries, &mut 0, &mut leaves, &mut changes, &mut arrays)?;
         rd.set(b"IDTree", rewritten);
     } else if !entries.is_empty() {
         let mut d = Dict::new();
@@ -669,6 +747,9 @@ pub fn set_identifier(doc: &mut Document, id: ObjRef, identifier: Option<&str>) 
     changes.insert(root, rd);
     for (id, d) in changes {
         commit_dict(doc, id, d);
+    }
+    for (id, value) in arrays {
+        doc.set(id, value);
     }
     Ok(())
 }
@@ -720,6 +801,9 @@ fn selected_roots<'a>(tree: &'a TagTree, ids: &[ObjRef]) -> Result<Vec<&'a TagEl
 /// Move a selection atomically in document order. Selected descendants of selected
 /// ancestors are covered by their ancestor. Index is measured after all removals.
 pub fn move_tags(doc: &mut Document, ids: &[ObjRef], parent: Option<ObjRef>, index: usize) -> Result<()> {
+    associations::preserve(doc, |doc| move_tags_inner(doc, ids, parent, index))
+}
+fn move_tags_inner(doc: &mut Document, ids: &[ObjRef], parent: Option<ObjRef>, index: usize) -> Result<()> {
     let tree = editable(doc)?;
     let selected = selected_roots(&tree, ids)?;
     let selected_ids: BTreeSet<_> = selected.iter().map(|e| e.id).collect();
@@ -748,12 +832,16 @@ pub fn move_tags(doc: &mut Document, ids: &[ObjRef], parent: Option<ObjRef>, ind
     if index > dk.len() {
         return Err(invalid("destination index exceeds child count after all removals"));
     }
+    if destination_page.is_some() {
+        let page_less: Vec<_> = selected.iter().filter(|e| e.page.is_none()).map(|e| e.id).collect();
+        if !explicit_subtree_pages(doc, &tree, &page_less)? {
+            return Err(invalid("move would assign an inherited page to a page-less tag"));
+        }
+    }
     for e in &selected {
         let mut d = dictionary(doc, e.id)?;
         if let Some(pg) = e.page {
             d.set(b"Pg", Object::Ref(pg));
-        } else if destination_page.is_some() {
-            return Err(invalid("move would assign an inherited page to a page-less tag"));
         }
         d.set(b"P", Object::Ref(destination));
         changes.insert(e.id, d);
@@ -761,6 +849,7 @@ pub fn move_tags(doc: &mut Document, ids: &[ObjRef], parent: Option<ObjRef>, ind
     dk.splice(index..index, selected.iter().map(|e| Object::Ref(e.id)));
     set_kids(&mut dd, dk);
     changes.insert(destination, dd);
+    parent_storage::validate_k_rewrites(doc, &changes)?;
     for (id, d) in changes {
         commit_dict(doc, id, d);
     }
@@ -771,13 +860,25 @@ pub fn move_tags(doc: &mut Document, ids: &[ObjRef], parent: Option<ObjRef>, ind
 /// processes every explicitly selected tag, deepest first.
 /// A failed later deletion leaves the original document untouched.
 pub fn delete_tags(doc: &mut Document, ids: &[ObjRef], mode: DeleteMode) -> Result<()> {
+    associations::preserve(doc, |doc| delete_tags_inner(doc, ids, mode))
+}
+fn delete_tags_inner(doc: &mut Document, ids: &[ObjRef], mode: DeleteMode) -> Result<()> {
     let tree = editable(doc)?;
     let roots = selected_roots(&tree, ids)?;
     let selected_ids: BTreeSet<_> = ids.iter().copied().collect();
     let selected = if mode == DeleteMode::Unwrap { tree.elements.iter().rev().filter(|e| selected_ids.contains(&e.id)).collect() } else { roots };
     // Each delete currently revalidates the tree and scans document objects. Bound the
     // repeated work before cloning/mutating instead of freezing on large selections.
-    let mut per_delete = tree.elements.len().checked_add(tree.children.len()).and_then(|n| n.checked_add(doc.object_numbers().len()));
+    let preservation_work = associations::preservation_work(doc, &tree)?;
+    // SD, ID reference/ownership, K ownership and ParentTree ownership can each
+    // scan every direct value. Charge all five scans before cloning the batch.
+    let storage_scan_work = parent_storage::scan_work(doc)?.checked_mul(5);
+    let mut per_delete = tree
+        .elements
+        .len()
+        .checked_add(tree.children.len())
+        .and_then(|n| storage_scan_work.and_then(|scan| n.checked_add(scan)))
+        .and_then(|n| n.checked_add(preservation_work));
     for e in &tree.elements {
         per_delete = per_delete.and_then(|n| n.checked_add(e.kids.len()));
     }
@@ -795,6 +896,9 @@ pub fn delete_tags(doc: &mut Document, ids: &[ObjRef], mode: DeleteMode) -> Resu
 /// Set or remove a custom RoleMap entry. Existing indirect RoleMap identity is retained.
 /// All mappings must terminate at a standard role, and roles still in use cannot be unmapped.
 pub fn set_role_mapping(doc: &mut Document, role: &str, target: Option<&str>) -> Result<()> {
+    associations::preserve(doc, |doc| set_role_mapping_inner(doc, role, target))
+}
+fn set_role_mapping_inner(doc: &mut Document, role: &str, target: Option<&str>) -> Result<()> {
     let tree = editable(doc)?;
     let root = tree.root.ok_or_else(|| invalid("document has no structure tree"))?;
     let mut rd = dictionary(doc, root)?;
@@ -803,7 +907,7 @@ pub fn set_role_mapping(doc: &mut Document, role: &str, target: Option<&str>) ->
         None => Dict::new(),
     };
     let valid_name = |s: &str| !s.is_empty() && s.len() <= 127 && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-');
-    if !valid_name(role) || crate::structure::is_standard(role.as_bytes()) {
+    if !valid_name(role) || is_standard_role(role, PDF_17_NAMESPACE) {
         return Err(invalid("RoleMap source must be a custom name of 1–127 ASCII letters, digits, underscores or hyphens"));
     }
     if let Some(target) = target {
@@ -814,13 +918,12 @@ pub fn set_role_mapping(doc: &mut Document, role: &str, target: Option<&str>) ->
     } else {
         map.remove(role.as_bytes());
     }
-    validate_role_map(doc, &map)?;
+    RoleResolver::read(doc, &rd)?.reject_shared_root_map(doc, &rd)?;
+    let mut candidate = rd.clone();
+    candidate.set(b"RoleMap", Object::Dict(map.clone()));
+    let resolver = RoleResolver::read(doc, &candidate)?;
     for e in &tree.elements {
-        let mut issues = Vec::new();
-        let standard = resolved_role(doc, &map, e.role.as_bytes(), &mut issues);
-        if !issues.is_empty() || !crate::structure::is_standard(standard.as_bytes()) {
-            return Err(invalid("mapping change would leave an existing tag without a standard role"));
-        }
+        resolver.resolve(doc, &dictionary(doc, e.id)?)?;
     }
     if let Some(id) = rd.reference(b"RoleMap") {
         dictionary(doc, id)?;
@@ -831,34 +934,12 @@ pub fn set_role_mapping(doc: &mut Document, role: &str, target: Option<&str>) ->
     }
     Ok(())
 }
-fn validate_role_map(doc: &Document, map: &Dict) -> Result<()> {
-    if map.len() > LIMIT {
-        return Err(invalid("RoleMap exceeds safe limits"));
-    }
-    for (name, value) in map.iter() {
-        if crate::structure::is_standard(name) {
-            return Err(invalid("RoleMap cannot redefine standard roles"));
-        }
-        if let Some(id) = value.as_ref()
-            && doc.generation(id.num) != id.generation
-        {
-            return Err(invalid("stale RoleMap value generation"));
-        }
-        if doc.resolve(value).as_name().is_none() {
-            return Err(invalid("RoleMap value must be a name"));
-        }
-        let mut issues = Vec::new();
-        let resolved = resolved_role(doc, map, name, &mut issues);
-        if !issues.is_empty() || !crate::structure::is_standard(resolved.as_bytes()) {
-            return Err(invalid("RoleMap contains a cycle, excessive depth or a role without a standard target"));
-        }
-    }
-    Ok(())
-}
-
 /// Reassign one existing MCID/MCR/OBJR leaf. Both indexes address mixed child lists;
 /// destination index is measured after removal. Never changes painting content.
 pub fn move_content(doc: &mut Document, source: ObjRef, source_index: usize, destination: ObjRef, index: usize) -> Result<()> {
+    associations::preserve(doc, |doc| move_content_inner(doc, source, source_index, destination, index))
+}
+fn move_content_inner(doc: &mut Document, source: ObjRef, source_index: usize, destination: ObjRef, index: usize) -> Result<()> {
     let tree = editable(doc)?;
     let src = element(&tree, source)?;
     element(&tree, destination)?;
@@ -954,9 +1035,11 @@ pub fn move_content(doc: &mut Document, source: ObjRef, source_index: usize, des
         replacements.insert(entry.key, Some(value));
     }
     let pt = rd.get(b"ParentTree").ok_or_else(|| invalid("missing ParentTree"))?;
-    let (rewritten, _) = rewrite_parent(doc, pt, &replacements, &mut changes, 0)?;
+    let (rewritten, _) = rewrite_parent(doc, pt, &replacements, &mut changes, &mut arrays, 0)?;
     rd.set(b"ParentTree", rewritten);
     changes.insert(root, rd);
+    parent_storage::validate_k_rewrites(doc, &changes)?;
+    parent_storage::validate_rewrite(doc, &dictionary(doc, root)?, &changes, &arrays)?;
     for (id, d) in changes {
         commit_dict(doc, id, d);
     }
@@ -994,19 +1077,21 @@ fn parent_entries(doc: &Document, root: &Dict) -> Result<Vec<ParentEntry>> {
                 return Err(invalid("cyclic or shared ParentTree node"));
             }
         }
-        let node = doc.dict(&obj).ok_or_else(|| invalid("ParentTree node is not a dictionary"))?;
+        let Object::Dict(node) = namespaces::checked_resolve(doc, &obj)? else {
+            return Err(invalid("ParentTree node is not a dictionary"));
+        };
         if node.contains(b"Kids") && node.contains(b"Nums") {
             return Err(invalid("ParentTree node has both Kids and Nums"));
         }
         if let Some(k) = node.get(b"Kids") {
-            let kids = doc.resolve(k);
+            let kids = namespaces::checked_resolve(doc, k)?;
             let kids = kids.as_array().ok_or_else(|| invalid("ParentTree Kids is not an array"))?;
             if stack.len().saturating_add(kids.len()).saturating_add(count) > LIMIT {
                 return Err(invalid("ParentTree exceeds safe inspection limits"));
             }
             stack.extend(kids.iter().rev().cloned().map(|k| (k, depth.saturating_add(1))));
         } else if let Some(nums) = node.get(b"Nums") {
-            let nums = doc.resolve(nums);
+            let nums = namespaces::checked_resolve(doc, nums)?;
             let nums = nums.as_array().ok_or_else(|| invalid("ParentTree Nums is not an array"))?;
             if nums.len() % 2 != 0 || nums.len() > LIMIT {
                 return Err(invalid("invalid ParentTree Nums length"));
@@ -1025,8 +1110,8 @@ fn parent_entries(doc: &Document, root: &Dict) -> Result<Vec<ParentEntry>> {
                 {
                     return Err(invalid("stale ParentTree value generation"));
                 }
-                let resolved = doc.resolve(&value);
-                match &*resolved {
+                let resolved = namespaces::checked_resolve(doc, &value)?;
+                match &resolved {
                     Object::Array(a) if a.len() <= LIMIT && a.iter().all(|v| matches!(v, Object::Null | Object::Ref(_))) => {
                         count = count.saturating_add(a.len());
                         if count > LIMIT {
@@ -1049,14 +1134,13 @@ fn parent_entries(doc: &Document, root: &Dict) -> Result<Vec<ParentEntry>> {
 /// Delete tags, never page content. Unwrap promotes the exact ordered kids; subtree removes
 /// their associations. Objects stay allocated, so unrelated references cannot dangle.
 pub fn delete(doc: &mut Document, id: ObjRef, mode: DeleteMode) -> Result<()> {
+    associations::preserve(doc, |doc| delete_inner(doc, id, mode))
+}
+fn delete_inner(doc: &mut Document, id: ObjRef, mode: DeleteMode) -> Result<()> {
     let tree = editable(doc)?;
     let e = element(&tree, id)?;
     let root = tree.root.ok_or_else(|| invalid("missing structure root"))?;
     let mut root_dict = dictionary(doc, root)?;
-    reject_structure_destinations(doc)?;
-    if root_dict.contains(b"IDTree") {
-        return Err(invalid("deletion while an IDTree exists is not supported"));
-    }
     // Cross-element references need reference-aware rewriting, not a blind tree deletion.
     if tree.elements.iter().any(|e| dictionary(doc, e.id).is_ok_and(|d| d.contains(b"Ref"))) {
         return Err(invalid("deletion with structure Ref associations is not supported"));
@@ -1076,7 +1160,10 @@ pub fn delete(doc: &mut Document, id: ObjRef, mode: DeleteMode) -> Result<()> {
             }
         }
     }
+    id_edit::reject_structure_destinations(doc, &tree, &removed)?;
     let mut changes = BTreeMap::new();
+    let mut object_changes = BTreeMap::new();
+    let mut root_changed = prune_deleted_identifiers(doc, &tree, root, &mut root_dict, &removed, &mut changes, &mut object_changes)?;
     let mut promoted = Vec::new();
     if mode == DeleteMode::Unwrap {
         if e.parent.is_none() && kids.iter().any(|k| !matches!(classify(doc, k, e.page), TagKid::Element { .. })) {
@@ -1125,7 +1212,6 @@ pub fn delete(doc: &mut Document, id: ObjRef, mode: DeleteMode) -> Result<()> {
     let entries = parent_entries(doc, &root_dict)?;
     // Rewrite only number-tree values. Preserve the tree topology, keys and limits; a
     // deleted singleton maps to null, and a removed MCID slot stays null (never shifts).
-    let mut object_changes = BTreeMap::new();
     let replacements: BTreeMap<i64, Option<Object>> = entries
         .into_iter()
         .map(|entry| {
@@ -1154,8 +1240,11 @@ pub fn delete(doc: &mut Document, id: ObjRef, mode: DeleteMode) -> Result<()> {
         })
         .collect();
     if let Some(pt) = root_dict.get(b"ParentTree").cloned() {
-        let (rewritten, _) = rewrite_parent(doc, &pt, &replacements, &mut changes, 0)?;
+        let (rewritten, _) = rewrite_parent(doc, &pt, &replacements, &mut changes, &mut object_changes, 0)?;
         root_dict.set(b"ParentTree", rewritten);
+        root_changed = true;
+    }
+    if root_changed {
         // Root may also be the affected tag's parent.
         if let Some(changed) = changes.get(&root) {
             let k = changed.get(b"K").cloned();
@@ -1181,6 +1270,8 @@ pub fn delete(doc: &mut Document, id: ObjRef, mode: DeleteMode) -> Result<()> {
             }
         }
     }
+    parent_storage::validate_k_rewrites(doc, &changes)?;
+    parent_storage::validate_rewrite(doc, &dictionary(doc, root)?, &changes, &object_changes)?;
     for (r, d) in changes {
         commit_dict(doc, r, d);
     }
@@ -1194,15 +1285,19 @@ fn rewrite_parent(
     obj: &Object,
     replacements: &BTreeMap<i64, Option<Object>>,
     changes: &mut BTreeMap<ObjRef, Dict>,
+    objects: &mut BTreeMap<ObjRef, Object>,
     depth: usize,
 ) -> Result<(Object, Option<(i64, i64)>)> {
     if depth > DEPTH {
         return Err(invalid("ParentTree nesting limit"));
     }
-    let mut d = doc.dict(obj).ok_or_else(|| invalid("invalid ParentTree node"))?;
+    let Object::Dict(mut d) = namespaces::checked_resolve(doc, obj)? else {
+        return Err(invalid("invalid ParentTree node"));
+    };
     let mut range: Option<(i64, i64)> = None;
     if let Some(nums) = d.get(b"Nums") {
-        let nums = doc.resolve(nums);
+        let array_ref = nums.as_ref();
+        let nums = namespaces::checked_resolve(doc, nums)?;
         let nums = nums.as_array().ok_or_else(|| invalid("invalid ParentTree Nums"))?;
         let mut out = Vec::new();
         for pair in nums.as_chunks::<2>().0 {
@@ -1213,22 +1308,35 @@ fn rewrite_parent(
                 range = Some((range.map_or(key, |r| r.0.min(key)), range.map_or(key, |r| r.1.max(key))));
             }
         }
-        d.set(b"Nums", Object::Array(out));
+        if let Some(id) = array_ref {
+            objects.insert(id, Object::Array(out));
+            d.set(b"Nums", Object::Ref(id));
+        } else {
+            d.set(b"Nums", Object::Array(out));
+        }
     }
     if let Some(kids) = d.get(b"Kids") {
-        let kids = doc.resolve(kids);
+        let array_ref = kids.as_ref();
+        let kids = namespaces::checked_resolve(doc, kids)?;
         let kids = kids.as_array().ok_or_else(|| invalid("invalid ParentTree Kids"))?;
         let mut out = Vec::new();
         for kid in kids {
-            let (kid, bounds) = rewrite_parent(doc, kid, replacements, changes, depth.saturating_add(1))?;
+            let (kid, bounds) = rewrite_parent(doc, kid, replacements, changes, objects, depth.saturating_add(1))?;
             if let Some((lo, hi)) = bounds {
                 out.push(kid);
                 range = Some((range.map_or(lo, |r| r.0.min(lo)), range.map_or(hi, |r| r.1.max(hi))));
+            } else if let Object::Dict(node) = &kid
+                && node.iter().any(|(key, _)| !matches!(key.as_slice(), b"Nums" | b"Kids" | b"Limits"))
+            {
+                return Err(invalid("cannot prune a direct ParentTree node containing unknown properties"));
             }
         }
         if out.is_empty() {
             d.remove(b"Kids");
             d.set(b"Nums", Object::Array(Vec::new()));
+        } else if let Some(id) = array_ref {
+            objects.insert(id, Object::Array(out));
+            d.set(b"Kids", Object::Ref(id));
         } else {
             d.set(b"Kids", Object::Array(out));
         }
@@ -1272,143 +1380,26 @@ fn commit_dict(doc: &mut Document, id: ObjRef, mut new: Dict) {
     }
     doc.set(id, new);
 }
-fn validate_associations(doc: &Document, tree: &mut TagTree, entries: &[ParentEntry]) {
-    let by_key: BTreeMap<_, _> = entries.iter().map(|e| (e.key, &e.value)).collect();
-    let page_ids: BTreeSet<_> = tree.pages.iter().copied().collect();
-    let ids: BTreeSet<_> = tree.elements.iter().map(|e| e.id).collect();
-    for entry in entries {
-        let value = doc.resolve(&entry.value);
-        let owners: Vec<_> = match &*value {
-            Object::Array(a) => a.iter().filter_map(Object::as_ref).collect(),
-            Object::Dict(_) => entry.value.as_ref().into_iter().collect(),
-            _ => Vec::new(),
-        };
-        for owner in owners {
-            if !ids.contains(&owner) {
-                tree.issues.push(format!("ParentTree key {} refers to unreachable tag {owner}", entry.key));
-            }
-        }
-    }
-    let mut seen = BTreeSet::new();
-    let mut expected = BTreeMap::new();
-    let mut key_objects = BTreeMap::new();
-    for e in &tree.elements {
-        for kid in &e.kids {
-            let association = match kid {
-                TagKid::Mcid { id, page } | TagKid::Mcr { id, page, stream: None } => Some((*page, Some(*id))),
-                TagKid::Mcr { id, stream: Some(stream), .. } => Some((Some(*stream), Some(*id))),
-                TagKid::Objr { object, .. } => Some((Some(*object), None)),
-                _ => None,
-            };
-            let Some((object, mcid)) = association else { continue };
-            let Some(object) = object else {
-                tree.issues.push(format!("{} content has no effective page or stream", e.id));
-                continue;
-            };
-            if !seen.insert((object, mcid)) {
-                tree.issues.push(format!("duplicate content ownership on {object}"));
-            }
-            let key_name = if mcid.is_some() { b"StructParents".as_slice() } else { b"StructParent" };
-            let object_value = doc.get(object);
-            if doc.generation(object.num) != object.generation {
-                tree.issues.push(format!("stale content object generation {object}"));
-            }
-            match kid {
-                TagKid::Mcid { .. } | TagKid::Mcr { stream: None, .. } if !page_ids.contains(&object) => {
-                    tree.issues.push(format!("{object} is not a document page"))
-                }
-                TagKid::Mcr { stream: Some(_), .. } if !matches!(&*object_value, Object::Stream(_)) => {
-                    tree.issues.push(format!("{object} is not a content stream"))
-                }
-                _ => {}
-            }
-            let key = object_value.as_dict().and_then(|d| d.int(key_name));
-            let Some(value) = key.and_then(|k| by_key.get(&k)) else {
-                tree.issues.push(format!("{} content lacks its ParentTree mapping", e.id));
-                continue;
-            };
-            if let Some(key) = key
-                && key_objects.insert(key, object).is_some_and(|old| old != object)
-            {
-                tree.issues.push(format!("ParentTree key {key} is shared by different content objects"));
-            }
-            if let Some(key) = key
-                && expected.insert((key, mcid), e.id).is_some()
-            {
-                tree.issues.push(format!("multiple content owners use ParentTree key {key}"));
-            }
-            let value = doc.resolve(value);
-            let owner = if let Some(mcid) = mcid {
-                usize::try_from(mcid).ok().and_then(|n| value.as_array().and_then(|a| a.get(n))).and_then(Object::as_ref)
-            } else {
-                by_key.get(&key.unwrap_or(-1)).and_then(|v| v.as_ref())
-            };
-            if owner != Some(e.id) {
-                tree.issues.push(format!("{} content has inconsistent ParentTree owner", e.id));
-            }
-        }
-    }
-    for entry in entries {
-        let resolved = doc.resolve(&entry.value);
-        match &*resolved {
-            Object::Array(a) => {
-                for (index, owner) in a.iter().enumerate() {
-                    if let Some(owner) = owner.as_ref()
-                        && i64::try_from(index).ok().and_then(|n| expected.get(&(entry.key, Some(n)))) != Some(&owner)
-                    {
-                        tree.issues.push(format!("ParentTree key {} contains an orphan content association", entry.key));
-                    }
-                }
-            }
-            _ => {
-                if let Some(owner) = entry.value.as_ref()
-                    && expected.get(&(entry.key, None)) != Some(&owner)
-                {
-                    tree.issues.push(format!("ParentTree key {} contains an orphan object association", entry.key));
-                }
-            }
-        }
-    }
-}
-
-fn reject_structure_destinations(doc: &Document) -> Result<()> {
-    let objects = doc.object_numbers();
-    if objects.len() > LIMIT {
-        return Err(invalid("document too large to verify structure destinations before deletion"));
-    }
-    let mut count = 0usize;
-    for num in objects {
-        let value = doc.get(ObjRef::new(num, doc.generation(num)));
-        let mut stack = vec![(&*value, 0usize)];
-        while let Some((value, depth)) = stack.pop() {
-            count = count.saturating_add(1);
-            if count > LIMIT || depth > DEPTH {
-                return Err(invalid("structure destination check exceeds safe limits"));
-            }
-            if let Some(d) = value.as_dict() {
-                if d.contains(b"SD") {
-                    return Err(invalid("deletion with structure destinations (SD) is not supported"));
-                }
-                stack.extend(d.iter().map(|(_, v)| (v, depth.saturating_add(1))));
-            } else if let Object::Array(a) = value {
-                stack.extend(a.iter().map(|v| (v, depth.saturating_add(1))));
-            }
-            if stack.len().saturating_add(count) > LIMIT {
-                return Err(invalid("structure destination check exceeds safe limits"));
-            }
-        }
+/// Check an already-staged edit against the original preserved associations.
+/// Callers must commit only after this succeeds (for example artifact conversion).
+pub(crate) fn validate_preserved_associations(before: &Document, after: &Document) -> Result<()> {
+    let tree = inspect(before)?;
+    if !tree.preserved_associations.is_empty() {
+        associations::validate_edit(before, &tree, after)?;
     }
     Ok(())
 }
 
+pub(crate) fn reject_orphan_content_overlap(doc: &Document, tree: &TagTree, affected: &BTreeSet<(ObjRef, i64)>) -> Result<()> {
+    associations::reject_content_overlap(doc, tree, affected)
+}
+
 fn validate_requested_role(doc: &Document, tree: &TagTree, p: &TagProperties) -> Result<()> {
     let Some(role) = &p.role else { return Ok(()) };
-    let map = tree.root.and_then(|r| doc.get(r).as_dict().and_then(|d| d.get(b"RoleMap")).and_then(|v| doc.dict(v))).unwrap_or_default();
-    let mut issues = Vec::new();
-    let standard = resolved_role(doc, &map, role.as_bytes(), &mut issues);
-    if !issues.is_empty() || !crate::structure::is_standard(standard.as_bytes()) {
-        return Err(invalid("tag type must be standard or resolve to a standard type through RoleMap"));
-    }
+    let root = tree.root.map(|r| dictionary(doc, r)).transpose()?.unwrap_or_default();
+    let mut candidate = Dict::new();
+    candidate.set(b"S", Object::name(role));
+    RoleResolver::read(doc, &root)?.resolve(doc, &candidate)?;
     Ok(())
 }
 
@@ -1418,7 +1409,7 @@ mod tests {
     fn props(role: &str) -> TagProperties {
         TagProperties { role: Some(role.into()), ..Default::default() }
     }
-    fn fixture() -> (Document, ObjRef, ObjRef, ObjRef, ObjRef, ObjRef) {
+    pub(super) fn fixture() -> (Document, ObjRef, ObjRef, ObjRef, ObjRef, ObjRef) {
         let mut doc = Document::new_empty();
         let top = create(&mut doc, None, 0, &props("Document")).unwrap();
         let group = create(&mut doc, Some(top), 0, &props("Sect")).unwrap();
@@ -2116,3 +2107,6 @@ mod tests {
         assert!(inspect(&doc).unwrap().elements.is_empty());
     }
 }
+
+#[cfg(test)]
+mod namespace_tests;

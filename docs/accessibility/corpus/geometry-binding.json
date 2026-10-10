@@ -1,0 +1,149 @@
+{
+  "schema_version": 1,
+  "acceptance_report_sha256": "ccbd7240d9073e60a472f9938f675df02b6f46942c62a418c90c8a2cfc8f38f9",
+  "retained_evidence_sha256": "c3faa28117a496f06918086e56bbaef5d2362e7249312db5853632eb79ee355a",
+  "manifest_sha256": "11a5946e7282db563f42c40eb308c1c891fce4b56e184f89f6c3e2357f13e25d",
+  "probe_sha256": "1182b3c688b3d58bda44eb9caffa73c74fb56ed23e2a623ed3c87cfa13120a26",
+  "review_script_sha256": "1b55664df935b2e766c829891f550b5a2de937f382ac491f0bfc022ad31e316a",
+  "files_inspected": 526,
+  "gap_cases_matched": 19,
+  "missing_identities_matched": 212,
+  "source_hashes_reverified": true,
+  "new_or_unmatched_gap_cases": 0,
+  "cases": [
+    {
+      "source": "verapdf",
+      "path": "PDF_UA-1/7.1 General/7.1-t01-pass-b.pdf",
+      "sha256": "2c9ae4a4d71422a92e641409c87c55990e19d1ae4b7cb3bce1e3f62be9ff3dfd",
+      "missing_identities": 1,
+      "exact_identity_and_owner_match": true
+    },
+    {
+      "source": "verapdf",
+      "path": "PDF_UA-1/7.15 XFA/7.15-t01-fail-a.pdf",
+      "sha256": "4cdf951278ccd783d94be0dfb36d3794946fdb271f3974dea696ac16c1128521",
+      "missing_identities": 1,
+      "exact_identity_and_owner_match": true
+    },
+    {
+      "source": "verapdf",
+      "path": "PDF_UA-1/7.18 Annotations/7.18.1 General/7.18.1-t02-pass-c.pdf",
+      "sha256": "b86ae90fea7b2254d9d760aeed68abd6ad06bd48338fdc6ada42db5497677deb",
+      "missing_identities": 1,
+      "exact_identity_and_owner_match": true
+    },
+    {
+      "source": "verapdf",
+      "path": "PDF_UA-1/7.18 Annotations/7.18.1 General/7.18.1-t02-pass-d.pdf",
+      "sha256": "884e2bf4a3edf2fb53cb177206e34f105e40b141439984b833f256da7371fcca",
+      "missing_identities": 1,
+      "exact_identity_and_owner_match": true
+    },
+    {
+      "source": "verapdf",
+      "path": "PDF_UA-1/7.18 Annotations/7.18.1 General/7.18.1-t02-pass-g.pdf",
+      "sha256": "c9e461e4edb9772cd2708c0f949c3e176ee0f6e170644e7061e776b213a3f805",
+      "missing_identities": 1,
+      "exact_identity_and_owner_match": true
+    },
+    {
+      "source": "verapdf",
+      "path": "PDF_UA-1/7.18 Annotations/7.18.1 General/7.18.1-t02-pass-h.pdf",
+      "sha256": "d39c58600f04eb80684ee007bf679d3d1a918c1605a7335ecfef4343c3823bc5",
+      "missing_identities": 1,
+      "exact_identity_and_owner_match": true
+    },
+    {
+      "source": "verapdf",
+      "path": "PDF_UA-1/7.18 Annotations/7.18.1 General/7.18.1-t03-pass-c.pdf",
+      "sha256": "d21e11c9d4d65010834b5895f8b3bc9406f9aea8eef3f932a36c111c6a453531",
+      "missing_identities": 1,
+      "exact_identity_and_owner_match": true
+    },
+    {
+      "source": "verapdf",
+      "path": "PDF_UA-1/7.18 Annotations/7.18.1 General/7.18.1-t03-pass-d.pdf",
+      "sha256": "dab68ee47ad9fa20c3be6219bea63467b5b1b469c97969b3ee582b7b6bc95708",
+      "missing_identities": 1,
+      "exact_identity_and_owner_match": true
+    },
+    {
+      "source": "verapdf",
+      "path": "PDF_UA-1/7.18 Annotations/7.18.1 General/7.18.1-t03-pass-f.pdf",
+      "sha256": "5ec9198b506a20205f44728f1adba95fb41b48d0aebd3beb5c43584894c9b719",
+      "missing_identities": 2,
+      "exact_identity_and_owner_match": true
+    },
+    {
+      "source": "verapdf",
+      "path": "PDF_UA-1/7.18 Annotations/7.18.5 Links/7.18.5-t01-pass-b.pdf",
+      "sha256": "802265207715e7ee7c2fd9349eadce0d0cadfa97e0d9d62dac9f337bad6912b8",
+      "missing_identities": 2,
+      "exact_identity_and_owner_match": true
+    },
+    {
+      "source": "verapdf",
+      "path": "PDF_UA-1/7.5 Tables/7.5-t01-fail-c.pdf",
+      "sha256": "0a6884cd2ec19c77e0f5d8515e9a835de7f45f666e5a84a7b5005ac061cd5bef",
+      "missing_identities": 2,
+      "exact_identity_and_owner_match": true
+    },
+    {
+      "source": "verapdf",
+      "path": "PDF_UA-2/8.8 Intra-document destinations/8.8-t02-fail-a.pdf",
+      "sha256": "e7c097cb620a00f400d7c1cd84f61e0bb6e96da5593aa2d0d11606f9d52adfdf",
+      "missing_identities": 1,
+      "exact_identity_and_owner_match": true
+    },
+    {
+      "source": "verapdf",
+      "path": "PDF_UA-2/8.9 Annotations/8.9.2 Semantics and content/8.9.2.2 Annotations as artifacts/8.9.2.2-t01-fail-a.pdf",
+      "sha256": "0a646e8afeab3df9a3589eeaff80f48d4579703ef7447971ab7082ea8cbed761",
+      "missing_identities": 1,
+      "exact_identity_and_owner_match": true
+    },
+    {
+      "source": "techniques",
+      "path": "fundamentals/2-text/G2_03-Text-content-correctly-tagged-one-container-per-character/UA1_Tpdf-G2_03.pdf",
+      "sha256": "e47cf72f8c6c972c750f8d92cfa79100b67b469a9bc52fc6ea3e698f10a48389",
+      "missing_identities": 3,
+      "exact_identity_and_owner_match": true
+    },
+    {
+      "source": "techniques",
+      "path": "fundamentals/2-text/G2_06-ActualText-provides-correct-extractable-characters-in-place-of-OCR-errors/UA1_Tpdf-G2_06.pdf",
+      "sha256": "d7de1e10e633b7e6b5e93d7c45c9153e225eee5ae1e961186b93ae21d00025f0",
+      "missing_identities": 1,
+      "exact_identity_and_owner_match": true
+    },
+    {
+      "source": "reference",
+      "path": "PDFUA-Ref-2-01_Magazine-danish.pdf",
+      "sha256": "aef89af13c9c94fc4f4e1a8c5872450cc4c8fff7de544d8ada6a0912425aa434",
+      "missing_identities": 9,
+      "exact_identity_and_owner_match": true
+    },
+    {
+      "source": "reference",
+      "path": "PDFUA-Ref-2-04_Presentation.pdf",
+      "sha256": "90acb829ca8bfa037796592539d15010e9099d1cd2622aac1fce7d9fd3ae7575",
+      "missing_identities": 19,
+      "exact_identity_and_owner_match": true
+    },
+    {
+      "source": "reference",
+      "path": "PDFUA-Ref-2-05_BookChapter-german.pdf",
+      "sha256": "fc525b8899da31779b6143c16053779cd560d4417018a901472de33c71252352",
+      "missing_identities": 86,
+      "exact_identity_and_owner_match": true
+    },
+    {
+      "source": "reference",
+      "path": "PDFUA-Ref-2-09_Scanned.pdf",
+      "sha256": "bb46d5c723fe1427dd1bf92ccd8653f9a5cef4054f7d878168b99477fa3792ae",
+      "missing_identities": 78,
+      "exact_identity_and_owner_match": true
+    }
+  ],
+  "scope": "Retained immutable original-source/font analysis is applicable to the same source hashes and exact current missing identity/owner sets. Historical renderer corroboration remains historical and does not certify rebuilt code. All current coverage gaps remain disclosed; this receipt grants no support waiver or PDF/UA conformance claim."
+}

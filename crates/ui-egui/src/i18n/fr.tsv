@@ -2138,3 +2138,20 @@
 	Content · MCID {id} · stream	Contenu · MCID {id} · flux
 	Object reference · {object}	Référence d’objet · {object}
 	Unsupported · {description}	Non pris en charge · {description}
+
+# Compact accessibility tag panel and native properties dialogs.
+	Action needed	Action requise
+	Approximate content bounds	Contours approximatifs du contenu
+	Content bounds unavailable	Contours du contenu indisponibles
+	Content highlighted	Contenu mis en évidence
+	Convert to artifact	Convertir en artéfact
+	Delete tags	Supprimer les balises
+	Namespace:	Espace de noms :
+	No PDF standard suggestions for this namespace. Enter a type defined by its namespace.	Aucun type PDF standard suggéré pour cet espace de noms. Saisissez un type défini dans son espace de noms.
+	Search tags	Rechercher des balises
+	Structure is read-only. Metadata can still be edited.	La structure est en lecture seule. Les métadonnées restent modifiables.
+	Tag properties (F2)	Propriétés de la balise (F2)
+	Unsaved property changes. Apply them or choose Cancel properties to discard them.	Modifications des propriétés non enregistrées. Appliquez-les ou choisissez « Annuler les modifications des propriétés » pour les abandonner.
+	warning	avertissement
+	warnings	avertissements
+	{count} tag	{count} balise

@@ -53,3 +53,16 @@ dependencies change (plan/adr/0002, 0006).
 Vendored (vendor/, patched; see vendor/README.md):
 - hayro 0.7.1 — Apache-2.0 OR MIT, Copyright the hayro authors (licence files kept in vendor/hayro).
 - hayro-interpret 0.7.0 — Apache-2.0 OR MIT, Copyright the hayro authors (LICENSE-APACHE, LICENSE-MIT kept in vendor/hayro-interpret).
+
+Accessibility corpus metadata and reviewed expectations:
+- veraPDF Consortium and contributors, veraPDF-corpus revision bb75f4f0073d9350dfd058c0162a367e6fadf25e,
+  https://github.com/veraPDF/veraPDF-corpus, CC BY 4.0.
+- PDF Association and contributors, techniques-for-accessible-pdf revision 3e31095d8aeea941eccbbb766a23369374c2e9a6,
+  https://github.com/pdf-association/techniques-for-accessible-pdf, CC BY 4.0.
+- PDF Association and contributing organizations, PDF/UA Reference Suite 1.1 (February 2024),
+  https://pdfa.org/resource/pdfua-reference-suite/, CC BY 4.0.
+- veraPDF Consortium validation profile descriptions and predicates (1.30.3),
+  https://github.com/veraPDF/veraPDF-validation-profiles, CC BY 4.0.
+The manifest adapts source metadata into pinned test identities and explicitly reviewed expectations.
+See docs/accessibility/corpus/LICENSE-CC-BY-4.0.txt. Original PDFs and font programs are not redistributed.
+The separately installed veraPDF validator is used as an external oracle and is not included here.

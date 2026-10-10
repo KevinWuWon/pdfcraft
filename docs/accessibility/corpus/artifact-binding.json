@@ -1,0 +1,188 @@
+{
+  "acceptance_report_sha256": "ccbd7240d9073e60a472f9938f675df02b6f46942c62a418c90c8a2cfc8f38f9",
+  "final_artifact_evidence_sha256": "c8bb87235ff9aea3bbf7ef9a8bf2835fd1b432fc37a3b95012d9d0256d3671eb",
+  "final_artifact_source_sha256": "f3774c7d3e4fea44806ff4cbf3ea5edc38eb83b22a0e88bfb70e7948ed1fe495",
+  "summary": {
+    "files": 23,
+    "pixel_preserving": 23,
+    "operator_scope_preserving": 23,
+    "new_or_increased_validator_failures": 0,
+    "compliant_before": 10,
+    "compliant_after": 10
+  },
+  "verification": "Fresh independent checks of actual acceptance Session::save_bytes artifact.pdf files; no substitution of historical or standalone-harness outputs.",
+  "source_output_hashes": [
+    {
+      "source": "verapdf",
+      "path": "PDF_UA-1/7.2 Text/7.2-t29-fail-g.pdf",
+      "source_sha256": "a54e3259fe32fdc1c0dd8dfbb7c7a8140939879e379b7695b5d32b9800daa8c4",
+      "artifact_sha256": "5cbdf188c36ab6a1f528ada6131cc4960f82ae0a8763def730a542c97af13637"
+    },
+    {
+      "source": "verapdf",
+      "path": "PDF_UA-1/7.2 Text/7.2-t29-fail-h.pdf",
+      "source_sha256": "46d057df5010519cd57217356b6ea425ce5ff58f2bee147bb09ab35032a1f065",
+      "artifact_sha256": "6e4820be4d89683f4b94a00fb36b15d596553b8b4962e2c0901fb48b28704345"
+    },
+    {
+      "source": "verapdf",
+      "path": "PDF_UA-1/7.2 Text/7.2-t29-fail-i.pdf",
+      "source_sha256": "21507b296460ce992fbbb2da9d4732656784d42256cff51c1c4ed928ad436370",
+      "artifact_sha256": "73da461f60efe7e1f419cde9553ffe81330890b487ef818c929c643909824cad"
+    },
+    {
+      "source": "verapdf",
+      "path": "PDF_UA-1/7.2 Text/7.2-t29-fail-p.pdf",
+      "source_sha256": "1fbeac7937865ea6f252f9f2b1da841fd52bb26c76c299bc0900d4fa0c45674a",
+      "artifact_sha256": "0610496d523e771cf61a7dcd4f28cfb33fcae84175cd2470eed5164308dcc719"
+    },
+    {
+      "source": "verapdf",
+      "path": "PDF_UA-1/7.2 Text/7.2-t29-pass-e.pdf",
+      "source_sha256": "3801af552a153659331168d1bf796deb1f1736b75f20571a1a94dca76ed22cec",
+      "artifact_sha256": "7b0b8f5571ca7d81b1600b5714868612b08c85309d8c5b2edc11fcaaeb0db6a3"
+    },
+    {
+      "source": "verapdf",
+      "path": "PDF_UA-1/7.2 Text/7.2-t29-pass-f.pdf",
+      "source_sha256": "60391e718253a73d01bdbe62ed8e9ea476758c1eb1275d10c0cad666bf2da9aa",
+      "artifact_sha256": "10664f66c1030544eab93e5a01c0e29929ec4ce1d327bebcc93fbed43283fc7f"
+    },
+    {
+      "source": "verapdf",
+      "path": "PDF_UA-1/7.2 Text/7.2-t30-fail-a.pdf",
+      "source_sha256": "e78ef8c108d06d1c5cdcd1a26d49b42757c24fb4b2a0516f82a6a789152aaa60",
+      "artifact_sha256": "26736536335de74316bcbbee7d58e8a975209b56f6c7532db766869df1a718a4"
+    },
+    {
+      "source": "verapdf",
+      "path": "PDF_UA-1/7.2 Text/7.2-t30-pass-a.pdf",
+      "source_sha256": "f10c27d82bfee519181c402e0c0f1895ea98265bf9cf9efc2ef4b594abece047",
+      "artifact_sha256": "d6693b2d6c1055ea00a79214e9d88cbe9189fd0bce9e16eb0ddf82e67c95650e"
+    },
+    {
+      "source": "verapdf",
+      "path": "PDF_UA-1/7.2 Text/7.2-t31-fail-a.pdf",
+      "source_sha256": "e0629a6442b599644f3ce5bbe6e9e5c36dfbbe848f23b93c27924cde2a11b71f",
+      "artifact_sha256": "9b58c1a861072500db3a477c5e9f957a29010f5510b940efeb86969fc5476c8b"
+    },
+    {
+      "source": "verapdf",
+      "path": "PDF_UA-1/7.2 Text/7.2-t31-pass-a.pdf",
+      "source_sha256": "a04a7031ba0dd0ad319f31b6788b544d4cfd4c60c6fd5cc8f78cda44926b4b31",
+      "artifact_sha256": "cfbd1e16e54e5795f36c6d91427c63468e63b220dde6a43eba5d83adc1975641"
+    },
+    {
+      "source": "verapdf",
+      "path": "PDF_UA-1/7.2 Text/7.2-t32-fail-a.pdf",
+      "source_sha256": "db8a25f107c3779fe5d325ec172cc6f9fc1a826de2183f2f9cb50c78bb76f81f",
+      "artifact_sha256": "0d97066958203a6d38064bd4030782dbe9fdd8f74c20be6e5861b187683138d6"
+    },
+    {
+      "source": "verapdf",
+      "path": "PDF_UA-1/7.2 Text/7.2-t32-pass-a.pdf",
+      "source_sha256": "2369f643cceec94675c153fb35483888a72f835af7e3f4cd187cbecd67e0cd94",
+      "artifact_sha256": "8bb52e23f9f8f7caf92604155df2b2abbc0fc25e960a3b662f2d8dbcf0670069"
+    },
+    {
+      "source": "verapdf",
+      "path": "PDF_UA-1/7.2 Text/7.2-t34-pass-c.pdf",
+      "source_sha256": "21aa823ed0ff2c1173d7aa5d9045f781cbdf20cca7f2ac7588a1c7614d473316",
+      "artifact_sha256": "99c292c302965c34e57f2fb9fcffb6fc067dc539d485c823e50fe6c15ed568cd"
+    },
+    {
+      "source": "verapdf",
+      "path": "PDF_UA-1/7.20 XObjects/7.20-t02-pass-a.pdf",
+      "source_sha256": "373ac02839891376111854d9b49517ff192327fcd411ce53f408f70f72ca9ae6",
+      "artifact_sha256": "6e1ef9d75c1a2e1df0f73f53d21a1b83e5bd3637ea31c93fb6a0dfcc5b34fab2"
+    },
+    {
+      "source": "verapdf",
+      "path": "PDF_UA-2/8.4 Text representation for content/8.4.4 Declaring natural language/8.4.4-t02-fail-g.pdf",
+      "source_sha256": "2bed157da17bf61e695667769fd20a1fce5376b6d9d2c7297156d153410579ec",
+      "artifact_sha256": "68fe8be5faf0ce21489af2eb281125794ed1e2fdd1bac5911f2a9cbb30a9bf62"
+    },
+    {
+      "source": "verapdf",
+      "path": "PDF_UA-2/8.4 Text representation for content/8.4.4 Declaring natural language/8.4.4-t02-fail-h.pdf",
+      "source_sha256": "023aaa551dccc9d74cdb8898ba84b047b3cd741383e3a8b9cb2e3c19a5d301e3",
+      "artifact_sha256": "7897a2da312859d6b497d97a03a3520da633f1f33cb6746f75170b350b30c8f7"
+    },
+    {
+      "source": "verapdf",
+      "path": "PDF_UA-2/8.4 Text representation for content/8.4.4 Declaring natural language/8.4.4-t02-fail-i.pdf",
+      "source_sha256": "4f727e0760d43f5842e23b95789ad6aa33b0c46d585a77c4ef1a228fe5abc819",
+      "artifact_sha256": "dade1b0341906c9e3061f081c603f19a8ba2777e722a98bb70b5e171c71571d0"
+    },
+    {
+      "source": "verapdf",
+      "path": "PDF_UA-2/8.4 Text representation for content/8.4.4 Declaring natural language/8.4.4-t02-fail-p.pdf",
+      "source_sha256": "f68da992ed774186aae3dd766941aa02926535150bf3c7e3ecdcde8d7ab2af70",
+      "artifact_sha256": "36f3881b583f0927bac561cb88c0866cba41df7b4c17e063564b2166873a43e6"
+    },
+    {
+      "source": "verapdf",
+      "path": "PDF_UA-2/8.4 Text representation for content/8.4.4 Declaring natural language/8.4.4-t02-pass-e.pdf",
+      "source_sha256": "3e0ea1f3659317bcb404bdda5177c77e47a92607251d611ffa2a22d0430b002e",
+      "artifact_sha256": "2e6009fa4a7f14dcf71857de38d3f918d3834a5e22ab0c0927a26e25b44073bf"
+    },
+    {
+      "source": "verapdf",
+      "path": "PDF_UA-2/8.4 Text representation for content/8.4.4 Declaring natural language/8.4.4-t02-pass-f.pdf",
+      "source_sha256": "f4e83c732dbb485ea521259cccdf2dcd269a722b4d5139665e727b706ba926b3",
+      "artifact_sha256": "232b34fee3b4e98bd81a65b8019c29c7ded3767636db9fdb63322f2d4773e0b7"
+    },
+    {
+      "source": "reference",
+      "path": "PDFUA-Ref-2-02_Invoice.pdf",
+      "source_sha256": "fbae08464f192f532205833215505b78266e86df6283d9b0c439cb06927ce0b9",
+      "artifact_sha256": "6f43df63257c0d938075111135733903ef358b8558822a4e189c6f004d2ee81f"
+    },
+    {
+      "source": "techniques",
+      "path": "fundamentals/5-appropriate-semantics/G5_F05-Multiline-heading-inappropriately-tagged/UA1_Tpdf-G5_F05.pdf",
+      "source_sha256": "e78deaa1328e42497ee2abc7978f424f7ce7f6e05f0497b332327f722e88744a",
+      "artifact_sha256": "7edc7f77bbd408b9d7f7c2478bee870e8c5e0b3094ac746b7c195f807e4e451f"
+    },
+    {
+      "source": "techniques",
+      "path": "headings/H_F02-Multiline-heading-incorrectly-tagged/UA1_Tpdf-H_F02.pdf",
+      "source_sha256": "fac0aace3b61f86324f58963899b4462b627e7ca312f8275e822968dc597ed50",
+      "artifact_sha256": "42fd8b8c9b239be6eee13970c57186890b4d50c15514f6156e3cfa0c79a05806"
+    }
+  ],
+  "provenance": {
+    "acceptance_report": "report.json",
+    "acceptance_report_sha256": "ccbd7240d9073e60a472f9938f675df02b6f46942c62a418c90c8a2cfc8f38f9",
+    "artifact_source_sha256_at_validation": "f3774c7d3e4fea44806ff4cbf3ea5edc38eb83b22a0e88bfb70e7948ed1fe495",
+    "manifest_sha256": "11a5946e7282db563f42c40eb308c1c891fce4b56e184f89f6c3e2357f13e25d",
+    "probe": {
+      "executable": "tools/a11y_corpus_probe",
+      "sha256": "1182b3c688b3d58bda44eb9caffa73c74fb56ed23e2a623ed3c87cfa13120a26",
+      "source_executable": "target/debug/examples/a11y_corpus_probe"
+    },
+    "runner_executable_sha256": "46c37dc965ab0a3f2bc08275212ac53468eccb9bd87a30a8948eaff1f2ffbae8",
+    "runner_source_sha256": "16faa9eb09d138a804da04a8d498dc46616efd0be0602e2f0a81d8eb37be8228",
+    "prior_harness_outputs_byte_identical": 0,
+    "cases": 23,
+    "final_artifact_source_sha256": "f3774c7d3e4fea44806ff4cbf3ea5edc38eb83b22a0e88bfb70e7948ed1fe495",
+    "previous_artifact_source_sha256": "0851d37796dfc67a0ac5ecaa3d42b35efcccbc86c98d5ff84e46e56f6f318f1d",
+    "production_source_identical_to_previous": true,
+    "production_source_sha256": "03196b9d202438afc1b274e5a08c4a45550191d2922573891a414f66466f20ec",
+    "source_change_scope": "Two test-only ArtifactBudget initializer style changes; exact diff archived. This result is nevertheless a fresh check of all 23 actual final acceptance output files.",
+    "independent_checker_sha256": "3e0dcc196eb54ba5b4d1cdd2f1858cf9faf42431b8079afdce0adc883db4d928",
+    "source_and_actual_output_hashes_verified": 23,
+    "old_outputs_substituted": 0,
+    "raw_evidence_sha256": {
+      "operator-pixel-checks.json": "1e0b2b51ee1badde22b2afdab2e9084f1cc4083f82b7f2478abb443733f5e001",
+      "verapdf-comparison.json": "00e380c7fc831dd53b187147ce6d3907d6b60f20c4507cb3a4afa2c9f9015cab",
+      "verapdf-ua1.json": "eacd2093075a070bfa4e2f0e8985cfca3056109c7d444fa6f062e5c5bc817161",
+      "verapdf-ua2.json": "38d8b691238fc0ecdc99956ec8f226518a37b859c2ddfa2604b1ccb3b2d6bb49",
+      "check-external.log": "81fb9a8fc446bb312d00b90c221d44f50bddd5922ccfec5d76523e664af4dd4a",
+      "cases.json": "cef004134365af2e80df16d26533cc3a760d5ba8186bc1fe2f2251120431b1f4"
+    },
+    "acceptance_run": "pdfcraft-recovery-corpus-acceptance",
+    "artifact_source_path": "crates/a11y/src/artifact.rs"
+  },
+  "binding_paths": "Artifact paths are relative to the acceptance run directory; source paths are relative to their pinned source checkout."
+}

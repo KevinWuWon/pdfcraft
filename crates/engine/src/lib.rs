@@ -309,6 +309,12 @@ impl Document {
         self.editor.as_ref().map(|e| a11y::check(&e.cos, options))
     }
 
+    /// A generated XFA layout does not yet migrate source tag/content associations.
+    /// This restriction is separate from form filling and general document editing.
+    pub fn tag_edit_read_only_reason(&self) -> Option<&'static str> {
+        self.xfa.as_ref().map(|_| REGENERATED_XFA_TAG_REASON)
+    }
+
     /// Inspect the PDF structure tree, retaining mixed content order and full object identities.
     pub fn tags(&self) -> Result<a11y::tags::TagTree, EditError> {
         let editor = self
@@ -399,7 +405,18 @@ impl Document {
 
     /// Add alternate text: the figures, in document order.
     pub fn figures(&self) -> Vec<a11y::Figure> {
-        self.editor.as_ref().map(|e| a11y::figures(&e.cos)).unwrap_or_default()
+        self.try_figures().unwrap_or_default()
+    }
+
+    /// Discover figures with namespace-resolution failures reported explicitly.
+    pub fn try_figures(&self) -> Result<Vec<a11y::Figure>, EditError> {
+        let editor = self
+            .editor
+            .as_ref()
+            .ok_or_else(|| EditError::ReadOnly(self.read_only_reason.clone().unwrap_or_else(|| "the document cannot be read".into())))?;
+        guard(|| a11y::try_figures(&editor.cos))
+            .map_err(|e| EditError::Accessibility(format!("figure inspection failed unexpectedly: {e}")))?
+            .map_err(|e| EditError::Accessibility(e.to_string()))
     }
 
     /// The edit that fixes `rule`, for the rules with an automatic fix: the document language
@@ -766,6 +783,42 @@ impl Protection {
         }
         Ok(())
     }
+}
+
+const REGENERATED_XFA_TAG_REASON: &str = "Tag editing is unavailable for this dynamic XFA form because PdfCraft regenerated its pages without remapping the structure tree. Form filling is still available; use a static PDF with tags mapped to its final pages for tag editing.";
+
+/// Iterative and bounded even for programmatically constructed nested batches.
+fn changes_tag_structure(edit: &Edit) -> bool {
+    let mut pending = vec![edit];
+    let mut visited = 0_usize;
+    while let Some(edit) = pending.pop() {
+        visited = visited.saturating_add(1);
+        if visited > 100_000 {
+            return true;
+        }
+        match edit {
+            Edit::SetTagIdentifier { .. }
+            | Edit::ArtifactTag { .. }
+            | Edit::MoveTags { .. }
+            | Edit::DeleteTags { .. }
+            | Edit::SetTagRoleMapping { .. }
+            | Edit::MoveTagContent { .. }
+            | Edit::CreateTag { .. }
+            | Edit::UpdateTag { .. }
+            | Edit::MoveTag { .. }
+            | Edit::DeleteTag { .. }
+            | Edit::SetAltText { .. }
+            | Edit::MarkDecorative { .. } => return true,
+            Edit::Batch { edits, .. } => {
+                if pending.len().saturating_add(edits.len()) > 100_000 {
+                    return true;
+                }
+                pending.extend(edits.iter());
+            }
+            _ => {}
+        }
+    }
+    false
 }
 
 /// Edits that can be applied to a document. Page indices are 0-based.
@@ -2451,6 +2504,11 @@ impl Session {
         let today = self.today();
         let js_off = self.js_off;
         let doc = self.doc_mut(id)?;
+        if changes_tag_structure(&edit)
+            && let Some(reason) = doc.tag_edit_read_only_reason()
+        {
+            return Err(EditError::ReadOnly(reason.into()));
+        }
         let name = doc.name.clone();
         let is_xfa = doc.info.xfa.is_some();
         let mut cx = EditCtx::new(now, doc.generation ^ (id.0 << 48));

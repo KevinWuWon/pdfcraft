@@ -522,7 +522,13 @@ impl PdfCraftApp {
     pub(crate) fn start_alt_text(&mut self) {
         let Some((_, id)) = self.active_ids() else { return };
         let Some(doc) = self.session.get(id) else { return };
-        let figures = doc.figures();
+        let figures = match doc.try_figures() {
+            Ok(figures) => figures,
+            Err(error) => {
+                self.notify_error(error);
+                return;
+            }
+        };
         self.alt_draft = AltDraft {
             doc: Some(id),
             texts: figures.iter().map(|f| f.alt.clone().unwrap_or_default()).collect(),

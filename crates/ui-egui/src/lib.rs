@@ -1497,6 +1497,14 @@ impl PdfCraftApp {
         {
             return;
         }
+        if self.right == Some(RightPanel::Tags)
+            && self.dialog.is_none()
+            && !self.palette_open
+            && let Some(view) = self.active.and_then(|i| self.views.get_mut(i))
+            && tags_ui::shortcuts(&mut view.tags, ctx, view.id)
+        {
+            return;
+        }
         self.registry_shortcuts(ctx);
         if self.full_screen && ctx.input(|i| i.key_pressed(Key::Escape)) {
             self.set_full_screen(ctx, false);

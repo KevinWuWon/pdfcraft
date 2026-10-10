@@ -149,7 +149,7 @@ fn structure_problems_are_found() {
 fn row_and_column_spans_keep_a_table_regular() {
     let mut objs = good();
     // Row 1: a cell spanning two rows and one spanning two columns; row 2 then has one cell.
-    objs[6] = "<< /S /Document /P 6 0 R /K [ << /S /Table /A << /O /Table /Summary (s) >> /K [\
+    objs[6] = "<< /S /Document /P 6 0 R /Pg 3 0 R /K [ << /S /Table /A << /O /Table /Summary (s) >> /K [\
          << /S /TR /K [ << /S /TH /A << /O /Table /RowSpan 2 >> /K 0 >> << /S /TH /A [ << /O /Table /ColSpan 2 >> ] /K 1 >> ] >> \
          << /S /TR /K [ << /S /TD /K 2 >> << /S /TD /K 3 >> ] >> ] >> ] >>"
         .into();
@@ -288,7 +288,7 @@ fn setting_alt_text_and_marking_decorative() {
 }
 
 #[test]
-fn existing_decorative_action_repairs_nested_parent_tree_and_refuses_idtree() {
+fn existing_decorative_action_repairs_nested_parent_tree_and_prunes_idtree() {
     use pdfcraft_cos::{Dict, ObjRef, Object, PdfString};
     let mut doc = figures_doc();
     let figure = figures(&doc)[0].obj;
@@ -308,9 +308,19 @@ fn existing_decorative_action_repairs_nested_parent_tree_and_refuses_idtree() {
     let mut idtree = Dict::new();
     idtree.set(b"Names", Object::Array(vec![Object::String(PdfString::text("figure-id")), Object::Ref(figure)]));
     protected.update_dict(root, |d| d.set(b"IDTree", Object::Dict(idtree))).unwrap();
-    let before = pdfcraft_cos::write_full(&protected, &Default::default()).unwrap();
-    assert!(mark_decorative(&mut protected, figure).is_err());
-    assert_eq!(pdfcraft_cos::write_full(&protected, &Default::default()).unwrap(), before);
+    let mut malformed = protected.clone();
+    malformed.update_dict(root, |d| d.set(b"IDTree", Object::Dict(Dict::new()))).unwrap();
+    let before = pdfcraft_cos::write_full(&malformed, &Default::default()).unwrap();
+    assert!(mark_decorative(&mut malformed, figure).is_err());
+    assert_eq!(pdfcraft_cos::write_full(&malformed, &Default::default()).unwrap(), before);
+    mark_decorative(&mut protected, figure).unwrap();
+    let protected_tree = crate::tags::inspect(&protected).unwrap();
+    assert!(protected_tree.element(figure).is_none());
+    let index = protected.get(root).as_dict().unwrap().get(b"IDTree").unwrap().clone();
+    assert!(index.as_dict().unwrap().get(b"Names").unwrap().as_array().unwrap().is_empty());
+    let saved = pdfcraft_cos::write_full(&protected, &Default::default()).unwrap();
+    let reopened = Document::open(Arc::new(saved)).unwrap();
+    assert!(crate::tags::inspect(&reopened).unwrap().element(figure).is_none());
     mark_decorative(&mut doc, figure).unwrap();
     let tree = crate::tags::inspect(&doc).unwrap();
     assert!(tree.issues.is_empty(), "{:?}", tree.issues);

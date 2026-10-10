@@ -526,6 +526,10 @@ impl PdfCraftApp {
     pub(crate) fn registry_shortcuts(&mut self, ctx: &egui::Context) {
         use egui::{Key, KeyboardShortcut, Modifiers};
         let typing = ctx.egui_wants_keyboard_input();
+        let tag_tree_focused = self.right == Some(crate::RightPanel::Tags)
+            && self.dialog.is_none()
+            && !self.palette_open
+            && self.active.and_then(|i| self.views.get(i)).is_some_and(|view| crate::tags_ui::tree_has_focus(&view.tags, ctx, view.id));
         // A form field's editor is open on the page: its text isn't in the document until
         // committed. (Not egui's keyboard focus: an Escape in this frame has already cleared that,
         // while the field has yet to see the Escape and discard its draft.)
@@ -535,7 +539,7 @@ impl PdfCraftApp {
         specs.sort_by_key(|c| std::cmp::Reverse(c.shortcut.map(|s| s.modifier_count()).unwrap_or(0)));
         for spec in specs {
             let Some(s) = spec.shortcut else { continue };
-            if typing && !spec.in_text {
+            if typing && !spec.in_text && !(tag_tree_focused && matches!(spec.id, "edit.undo" | "edit.redo")) {
                 continue;
             }
             let Some(key) = Key::from_name(s.key) else { continue };

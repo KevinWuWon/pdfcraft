@@ -1,0 +1,16 @@
+{
+  "compressed_bytes": 1866783,
+  "compressed_file": "report.json.gz",
+  "compressed_sha256": "4127f3bbfd66e7bbbc68d2e755db4d5a1c6daa68db83b89627a4c7c013d1770e",
+  "decompression_byte_exact_verified": true,
+  "encoding": "gzip; mtime=0",
+  "exporter_sha256": "285ebfc649de44bddd134161e039a929287b8d400869282fa8efdecf2bfd10ca",
+  "kind": "lossless_portable_accessibility_report_archive",
+  "manifest_sha256": "11a5946e7282db563f42c40eb308c1c891fce4b56e184f89f6c3e2357f13e25d",
+  "raw_runner_report_sha256": "ccbd7240d9073e60a472f9938f675df02b6f46942c62a418c90c8a2cfc8f38f9",
+  "schema_version": 1,
+  "scope": "Complete portable schema-3 evidence compressed losslessly. Full raw validator vectors remain represented by exact hashes/counts; no corpus PDFs, renders or executables are embedded.",
+  "uncompressed_bytes": 19245502,
+  "uncompressed_file": "report.json",
+  "uncompressed_sha256": "37f7561194848a6010168df395b491589e767f97b84c0d9a6b6406e37d33970c"
+}

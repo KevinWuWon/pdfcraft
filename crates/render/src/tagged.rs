@@ -348,7 +348,8 @@ pub fn extract_page(pdf: &Pdf, page: usize, settings: &InterpreterSettings) -> O
     let mut device = Collector { clips: vec![bounds], ..Default::default() };
     interpret_page(p, &mut context, &mut device);
     if device.items.values().any(|item| !item.text.is_empty() && item.regions.is_empty()) {
-        device.issue("Some tagged text has no painted regions (for example clipping-only, invisible, or unsupported glyphs).");
+        device
+            .issue("Some tagged text has no painted regions (for example whitespace, cropped-out, clipping-only, invisible, or unsupported glyphs).");
     }
     Some(PageTagContent {
         page,
@@ -444,6 +445,53 @@ mod tests {
         assert_eq!(content.items[0].text, "Hidden");
         assert!(content.items[0].regions.is_empty());
         assert!(!content.issues.is_empty());
+    }
+    #[test]
+    fn empty_and_whitespace_marks_keep_identity_without_fabricated_geometry() {
+        // Real tagged documents can give separators their own MCIDs. A space's advance
+        // width is not painted content and must not become a guessed selection region.
+        let content = extract(fixture(
+            "/Resources << /Font << /F 5 0 R >> >>",
+            "/P << /MCID 0 >> BDC EMC /Span << /MCID 1 >> BDC BT /F 12 Tf 20 70 Td ( ) Tj ET EMC /P << /MCID 2 >> BDC 10 20 30 10 re f EMC",
+            "5 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> endobj",
+        ));
+        assert_eq!(content.items.len(), 3);
+        assert_eq!(content.items[0].mcid, 0);
+        assert!(content.items[0].text.is_empty());
+        assert!(content.items[0].regions.is_empty());
+        assert_eq!(content.items[1].mcid, 1);
+        assert_eq!(content.items[1].text, " ");
+        assert!(content.items[1].regions.is_empty());
+        assert_eq!(content.items[2].regions, vec![[10.0, 70.0, 40.0, 80.0]]);
+        assert!(content.issues.iter().any(|issue| issue.contains("whitespace")));
+    }
+    #[test]
+    fn cropped_out_text_keeps_identity_and_reappears_only_when_crop_expands() {
+        let resources = "/Resources << /Font << /F 5 0 R >> >>";
+        let drawing = "/P << /MCID 0 >> BDC BT /F 12 Tf 20 10 Td (Outside) Tj ET EMC /P << /MCID 1 >> BDC BT /F 12 Tf 20 70 Td (Inside) Tj ET EMC";
+        let font = "5 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> endobj";
+        let cropped = extract(fixture(&format!("/CropBox [0 40 200 100] {resources}"), drawing, font));
+        assert_eq!(cropped.items[0].text, "Outside");
+        assert!(cropped.items[0].regions.is_empty());
+        assert!(!cropped.items[1].regions.is_empty());
+        assert!(cropped.issues.iter().any(|issue| issue.contains("cropped-out")));
+
+        let expanded = extract(fixture(resources, drawing, font));
+        assert_eq!(expanded.items[0].text, cropped.items[0].text);
+        assert!(!expanded.items[0].regions.is_empty());
+        // The original crop is y=0..60 in the expanded page's top-left view space.
+        assert!(expanded.items[0].regions.iter().all(|region| region[1] >= 60.0));
+    }
+    #[test]
+    fn hidden_noview_empty_and_offpage_annotations_have_no_selection_regions() {
+        let content = extract(fixture(
+            "/Annots [6 0 R 7 0 R 8 0 R 9 0 R 10 0 R]",
+            "",
+            "6 0 obj << /Type /Annot /Subtype /Link /F 2 /Rect [20 30 30 50] >> endobj\n7 0 obj << /Type /Annot /Subtype /Link /F 32 /Rect [20 30 30 50] >> endobj\n8 0 obj << /Type /Annot /Subtype /Link /F 4 /Rect [20 30 20 30] >> endobj\n9 0 obj << /Type /Annot /Subtype /Link /F 4 /Rect [800 800 810 810] >> endobj\n10 0 obj << /Type /Annot /Subtype /Link /F 4 /Rect [20 30 30 50] >> endobj",
+        ));
+        assert_eq!(content.objects.len(), 1);
+        assert_eq!(content.objects[0].object, (10, 0));
+        assert_eq!(content.objects[0].regions, vec![[20.0, 50.0, 30.0, 70.0]]);
     }
     #[test]
     fn filled_and_stroked_glyphs_contribute_text_once() {

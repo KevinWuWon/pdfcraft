@@ -152,7 +152,7 @@ impl Automation {
     pub(crate) fn accessibility_tags(&self, a: &Args) -> Result<Value> {
         let doc = self.doc(a)?;
         let tree = doc.tags().map_err(failed)?;
-        Ok(json!({ "document": summary(doc), "tree": tree_json(&tree) }))
+        Ok(json!({ "document": summary(doc), "tree": tree_json(&tree), "tag_edit_read_only_reason": doc.tag_edit_read_only_reason() }))
     }
 
     pub(crate) fn accessibility_tag_edit(&mut self, a: &Args, action: &str) -> Result<Value> {
@@ -244,5 +244,5 @@ fn tree_json(tree: &pdfcraft_engine::a11y::tags::TagTree) -> Value {
             })
         })
         .collect();
-    json!({ "role_map": tree.role_map, "root": tree.root.map(identity), "pages": tree.pages.iter().copied().map(identity).collect::<Vec<_>>(), "children": kids_json(&tree.children), "elements": elements, "issues": tree.issues })
+    json!({ "role_map": tree.role_map, "root": tree.root.map(identity), "pages": tree.pages.iter().copied().map(identity).collect::<Vec<_>>(), "children": kids_json(&tree.children), "elements": elements, "issues": tree.issues, "edit_blockers": tree.edit_blockers, "preserved_associations": tree.preserved_associations.iter().map(|a| json!({"kind":a.kind.as_str(),"key":a.key,"mcid":a.mcid,"owner":identity(a.owner)})).collect::<Vec<_>>() })
 }

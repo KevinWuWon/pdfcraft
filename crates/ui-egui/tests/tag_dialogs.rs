@@ -193,15 +193,15 @@ fn role_dialog_disables_underlying_properties_without_overwriting_them() {
     h.get_by_label("<P> Body").click();
     h.run_steps(3);
     open_roles(&mut h);
-    assert!(h.get_by_label("Title").accesskit_node().is_disabled());
+    assert!(h.get_by_label("Properties…").accesskit_node().is_disabled());
     assert!(!h.get_by_label("Custom role").accesskit_node().is_disabled());
     replace(&mut h, "Custom role", "TemporaryDraft");
     replace(&mut h, "Maps to", "P");
-    assert!(h.query_all_by_value("Body").next().is_some());
+    assert_eq!(tree(&h).element(ObjRef::new(9, 0)).unwrap().title.as_deref(), Some("Body"));
     h.get_by_label("Cancel").click();
     h.run_steps(3);
-    assert!(!h.get_by_label("Title").accesskit_node().is_disabled());
-    assert!(h.query_all_by_value("Body").next().is_some());
+    assert!(!h.get_by_label("Properties…").accesskit_node().is_disabled());
+    assert_eq!(tree(&h).element(ObjRef::new(9, 0)).unwrap().title.as_deref(), Some("Body"));
     assert_eq!(tree(&h).element(ObjRef::new(9, 0)).unwrap().title.as_deref(), Some("Body"));
     assert!(!tree(&h).role_map.contains_key("TemporaryDraft"));
 }

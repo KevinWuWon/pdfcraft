@@ -2099,3 +2099,20 @@
 	Content · MCID {id} · stream	Содержимое · MCID {id} · поток
 	Object reference · {object}	Ссылка на объект · {object}
 	Unsupported · {description}	Не поддерживается · {description}
+
+# Compact accessibility tag panel and native properties dialogs.
+	Action needed	Требуется действие
+	Approximate content bounds	Приблизительные границы содержимого
+	Content bounds unavailable	Границы содержимого недоступны
+	Content highlighted	Содержимое выделено
+	Convert to artifact	Преобразовать в артефакт
+	Delete tags	Удалить теги
+	Namespace:	Пространство имён:
+	No PDF standard suggestions for this namespace. Enter a type defined by its namespace.	Для этого пространства имён нет предложений стандартных типов PDF. Введите тип, определённый в его пространстве имён.
+	Search tags	Поиск тегов
+	Structure is read-only. Metadata can still be edited.	Структура доступна только для чтения. Метаданные по-прежнему можно редактировать.
+	Tag properties (F2)	Свойства тега (F2)
+	Unsaved property changes. Apply them or choose Cancel properties to discard them.	Изменения свойств не сохранены. Примените их или выберите «Отменить изменения свойств», чтобы их отменить.
+	warning	предупр.
+	warnings	предупр.
+	{count} tag	Тегов: {count}

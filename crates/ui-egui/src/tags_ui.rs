@@ -5,9 +5,10 @@ use crate::{
     icons,
     panels::Nav,
     theme::{self, Tokens},
+    widgets,
 };
 use egui::{Key, Sense};
-use pdfcraft_engine::a11y::tags::{DeleteMode, TagElement, TagKid, TagProperties, TagTree};
+use pdfcraft_engine::a11y::tags::{DeleteMode, PDF_17_NAMESPACE, PDF_20_NAMESPACE, TagElement, TagKid, TagProperties, TagTree, is_standard_role};
 use pdfcraft_engine::{Document, Edit, ObjRef};
 use std::collections::{HashMap, HashSet};
 
@@ -96,6 +97,10 @@ pub(crate) struct State {
     pending_focus: Option<Node>,
     focus_properties: bool,
     filter: String,
+    search_open: bool,
+    search_focus: bool,
+    properties_open: bool,
+    warnings_open: bool,
     show_content: bool,
     initialized: bool,
     draft: Option<Draft>,
@@ -310,6 +315,8 @@ fn create_draft(state: &mut State, parent: Option<ObjRef>, index: usize, generat
         generation,
     });
     state.notice = None;
+    state.properties_open = true;
+    state.focus_properties = true;
 }
 
 fn move_edit(tree: &TagTree, row: &Row, direction: &str) -> Option<Edit> {
@@ -336,65 +343,209 @@ fn move_edit(tree: &TagTree, row: &Row, direction: &str) -> Option<Edit> {
     Some(Edit::MoveTag { id, parent, index })
 }
 
-fn properties(ui: &mut egui::Ui, state: &mut State, editable: bool, generation: u64) -> Option<Edit> {
-    let focus_type = std::mem::take(&mut state.focus_properties);
+/// Candidate inventory spans both PDF namespaces. The engine remains authoritative about
+/// membership; custom and MathML roles stay manually editable.
+const PDF_STANDARD_TYPE_CANDIDATES: &[&str] = &[
+    "Document",
+    "DocumentFragment",
+    "Part",
+    "Art",
+    "Sect",
+    "Div",
+    "BlockQuote",
+    "Caption",
+    "TOC",
+    "TOCI",
+    "Index",
+    "NonStruct",
+    "Private",
+    "Aside",
+    "Title",
+    "FENote",
+    "P",
+    "H",
+    "H1",
+    "H2",
+    "H3",
+    "H4",
+    "H5",
+    "H6",
+    "L",
+    "LI",
+    "Lbl",
+    "LBody",
+    "Table",
+    "TR",
+    "TH",
+    "TD",
+    "THead",
+    "TBody",
+    "TFoot",
+    "Span",
+    "Quote",
+    "Note",
+    "Reference",
+    "BibEntry",
+    "Code",
+    "Link",
+    "Annot",
+    "Ruby",
+    "RB",
+    "RT",
+    "RP",
+    "Warichu",
+    "WT",
+    "WP",
+    "Figure",
+    "Formula",
+    "Form",
+    "Sub",
+    "Em",
+    "Strong",
+    "Artifact",
+];
+
+fn standard_type_suggestions(tree: &TagTree, target: &Target) -> Vec<&'static str> {
+    let namespace = match target {
+        // NS is never inherited from a new tag's parent.
+        Target::New { .. } => Some(PDF_17_NAMESPACE),
+        Target::Existing(id) => {
+            tree.element(*id).and_then(|e| if e.namespace.is_none() { Some(PDF_17_NAMESPACE) } else { e.namespace_uri.as_deref() })
+        }
+    };
+    match namespace {
+        Some(namespace @ (PDF_17_NAMESPACE | PDF_20_NAMESPACE)) => {
+            PDF_STANDARD_TYPE_CANDIDATES.iter().copied().filter(|role| is_standard_role(role, namespace)).collect()
+        }
+        _ => Vec::new(),
+    }
+}
+
+fn properties(ctx: &egui::Context, state: &mut State, tree: &TagTree, editable: bool, structure_editable: bool, generation: u64) -> Option<Edit> {
+    if !state.properties_open {
+        return None;
+    }
+    let focus_type = state.focus_properties;
+    let mut focus_acquired = false;
     if focus_type {
         state.pending_focus = None;
     }
     let mut edit = None;
     let mut cancel = false;
-    if let Some(d) = &mut state.draft {
-        ui.separator();
-        ui.label(egui::RichText::new(if matches!(d.target, Target::New { .. }) { tl!("New tag") } else { tl!("Tag properties") }).strong());
-        let stale = d.generation != generation;
-        if stale {
-            ui.colored_label(egui::Color32::DARK_RED, tl!("The document changed. Cancel to reload these properties."));
-        }
-        let footer_height = if matches!(d.target, Target::Existing(_)) { 170.0 } else { 92.0 };
-        let fields_height = (ui.available_height() - footer_height).max(80.0);
-        ui.add_enabled_ui(editable || stale, |ui| {
-            egui::ScrollArea::vertical().id_salt("tag-properties-fields").max_height(fields_height).auto_shrink([false, true]).show(ui, |ui| {
-                let label = ui.label(tl!("Type"));
-                ui.horizontal(|ui| {
-                    let input = ui.add(egui::TextEdit::singleline(&mut d.fields.role).desired_width(95.0)).labelled_by(label.id);
-                    if focus_type && input.enabled() {
-                        input.request_focus();
+    let mut open = true;
+    let escape = !egui::Popup::is_any_open(ctx) && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::Escape));
+    let Some(d) = &mut state.draft else {
+        state.properties_open = false;
+        return None;
+    };
+    let stale = d.generation != generation;
+    let standard_types = standard_type_suggestions(tree, &d.target);
+    let title = if matches!(d.target, Target::New { .. }) { tl!("New tag") } else { tl!("Tag properties") };
+    let max_height = (ctx.content_rect().height() - 190.0).clamp(100.0, 470.0);
+    egui::Window::new(title)
+        .id(egui::Id::new("tag-properties-window"))
+        .open(&mut open)
+        .collapsible(false)
+        .resizable(true)
+        .default_width(520.0)
+        .default_pos(ctx.content_rect().center() - egui::vec2(260.0, 200.0))
+        .min_width(350.0)
+        .show(ctx, |ui| {
+            if let Target::Existing(id) = d.target {
+                let target = format!(
+                    "<{}> {} · {id}",
+                    d.original.as_ref().map_or(d.fields.role.as_str(), |o| o.role.as_str()),
+                    d.original.as_ref().map_or("", |o| o.title.as_str())
+                );
+                ui.add(egui::Label::new(egui::RichText::new(&target).strong()).truncate()).on_hover_text(&target);
+                if let Some(e) = tree.element(id) {
+                    if let Some(namespace) = &e.namespace_uri {
+                        ui.add(egui::Label::new(egui::RichText::new(format!("{} {}", tl!("Namespace:"), namespace)).small()).truncate())
+                            .on_hover_text(namespace);
                     }
-                    egui::ComboBox::from_id_salt("tag-types").selected_text(tl!("Standard types")).show_ui(ui, |ui| {
-                        for role in [
-                            "Document", "Part", "Sect", "Div", "P", "H", "H1", "H2", "H3", "H4", "H5", "H6", "Span", "Quote", "Note", "Link",
-                            "Figure", "Formula", "L", "LI", "Lbl", "LBody", "Table", "TR", "TH", "TD", "THead", "TBody", "TFoot", "Form", "Caption",
-                            "TOC", "TOCI",
+                    if e.role != e.standard_role {
+                        ui.small(format!("{} {}", tl!("Mapped type:"), e.standard_role));
+                    }
+                }
+            }
+            if stale {
+                ui.label(tl!("The document changed. Cancel to reload these properties."));
+            }
+            if let Some(notice) = &state.notice {
+                ui.label(notice);
+            }
+            ui.separator();
+            egui::ScrollArea::vertical().id_salt("tag-properties-fields").max_height(max_height).auto_shrink([false, true]).show(ui, |ui| {
+                // Native TextEdit retains its focused stroke; unfocused fields use shared tokens.
+                let tokens = Tokens::get(ui.ctx());
+                ui.visuals_mut().widgets.inactive.bg_stroke = egui::Stroke::new(1.0, tokens.border);
+                ui.visuals_mut().widgets.hovered.bg_stroke = egui::Stroke::new(1.0, tokens.accent);
+                ui.add_enabled_ui(editable || stale, |ui| {
+                    egui::Grid::new("tag-property-grid").num_columns(2).spacing([14.0, 10.0]).show(ui, |ui| {
+                        let label = ui.label(tl!("Type"));
+                        ui.add_enabled_ui(structure_editable && !stale, |ui| {
+                            ui.horizontal(|ui| {
+                                let input = ui.add(egui::TextEdit::singleline(&mut d.fields.role).desired_width(110.0)).labelled_by(label.id);
+                                if focus_type && input.enabled() {
+                                    focus_acquired = input.has_focus();
+                                    input.request_focus();
+                                }
+                                let combo = ui
+                                    .add_enabled_ui(!standard_types.is_empty(), |ui| {
+                                        egui::ComboBox::from_id_salt("tag-types").selected_text(tl!("Standard types")).show_ui(ui, |ui| {
+                                            for role in &standard_types {
+                                                ui.selectable_value(&mut d.fields.role, (*role).into(), *role);
+                                            }
+                                        })
+                                    })
+                                    .inner;
+                                combo.response.widget_info(|| {
+                                    egui::WidgetInfo::labeled(egui::WidgetType::ComboBox, combo.response.enabled(), tl!("Standard types"))
+                                });
+                            });
+                            if standard_types.is_empty() {
+                                ui.small(tl!("No PDF standard suggestions for this namespace. Enter a type defined by its namespace."));
+                            }
+                        });
+                        ui.end_row();
+                        for (label, value, multiline) in [
+                            ("Title", &mut d.fields.title, false),
+                            ("Alternate text", &mut d.fields.alt, true),
+                            ("Actual text", &mut d.fields.actual_text, true),
+                            ("Language", &mut d.fields.lang, false),
+                            ("Abbreviation expansion", &mut d.fields.expansion, false),
                         ] {
-                            ui.selectable_value(&mut d.fields.role, role.into(), role);
+                            let focus_field = focus_type && (!structure_editable || stale) && label == "Title";
+                            let label = ui.label(tl!(label));
+                            let response = if multiline {
+                                ui.add(egui::TextEdit::multiline(value).desired_rows(2).desired_width(320.0))
+                            } else {
+                                ui.add(egui::TextEdit::singleline(value).desired_width(320.0))
+                            };
+                            if focus_field && response.enabled() {
+                                focus_acquired = response.has_focus();
+                                response.request_focus();
+                            }
+                            response.labelled_by(label.id);
+                            ui.end_row();
+                        }
+                        if matches!(d.target, Target::Existing(_)) {
+                            let label = ui.label(tl!("Tag ID"));
+                            ui.add_enabled(structure_editable && !stale, egui::TextEdit::singleline(&mut d.fields.identifier).desired_width(320.0))
+                                .labelled_by(label.id)
+                                .on_hover_text(tl!("Changing an ID can break external links that use the old ID."));
+                            ui.end_row();
                         }
                     });
                 });
-                for (label, value, multiline) in [
-                    ("Title", &mut d.fields.title, false),
-                    ("Alternate text", &mut d.fields.alt, true),
-                    ("Actual text", &mut d.fields.actual_text, true),
-                    ("Language", &mut d.fields.lang, false),
-                    ("Abbreviation expansion", &mut d.fields.expansion, false),
-                ] {
-                    let label = ui.label(tl!(label));
-                    let response = if multiline {
-                        ui.add(egui::TextEdit::multiline(value).desired_rows(2).desired_width(f32::INFINITY))
-                    } else {
-                        ui.add(egui::TextEdit::singleline(value).desired_width(f32::INFINITY))
-                    };
-                    response.labelled_by(label.id);
-                }
-                ui.label(egui::RichText::new(tl!("Language uses a language tag such as en-US. Empty text removes the property.")).small());
             });
-            if matches!(d.target, Target::Existing(_)) {
-                let label = ui.label(tl!("Tag ID"));
-                ui.add(egui::TextEdit::singleline(&mut d.fields.identifier).desired_width(f32::INFINITY)).labelled_by(label.id);
-                ui.label(egui::RichText::new(tl!("Changing an ID can break external links that use the old ID.")).small());
-            }
+            ui.separator();
             ui.horizontal(|ui| {
                 if ui
-                    .add_enabled(!stale && editable && d.changed() && !d.fields.role.trim().is_empty(), egui::Button::new(tl!("Apply properties")))
+                    .add_enabled_ui(!stale && editable && d.changed() && !d.fields.role.trim().is_empty(), |ui| {
+                        widgets::pill_button(ui, tl!("Apply properties"), true)
+                    })
+                    .inner
                     .clicked()
                 {
                     let properties = d.fields.patch(d.original.as_ref());
@@ -419,17 +570,30 @@ fn properties(ui: &mut egui::Ui, state: &mut State, editable: bool, generation: 
                         Target::New { parent, index } => Edit::CreateTag { parent, index, properties },
                     });
                 }
+                if widgets::pill_button(ui, tl!("Cancel properties"), false).clicked() {
+                    cancel = true;
+                }
             });
         });
-        if ui.button(tl!("Cancel properties")).clicked() {
+    // A native Window may discard a sizing pass. Keep focus pending until an input owns it.
+    if focus_type {
+        state.focus_properties = !focus_acquired;
+    }
+    if !open || escape {
+        if d.changed() {
+            state.notice = Some(tl!("Unsaved property changes. Apply them or choose Cancel properties to discard them.").into());
+        } else {
             cancel = true;
         }
     }
     if cancel {
         state.draft = None;
         state.notice = None;
+        state.properties_open = false;
+        state.focus_properties = false;
+        state.pending_focus = state.selected;
+        state.reveal = true;
     }
-    // Leave the draft until the edit generation changes. Errors must not discard typed input.
     edit
 }
 
@@ -519,6 +683,114 @@ fn find_from_regions(state: &mut State, tree: &TagTree, doc: &Document, page: us
     }
 }
 
+/// Display-only grouping within one marked-content or object identity. Raw engine regions
+/// remain unchanged for picking. Small whitespace may be enclosed; these are not ink masks.
+fn display_regions(regions: &[[f32; 4]]) -> Vec<[f32; 4]> {
+    #[derive(Clone)]
+    struct Group {
+        bounds: [f32; 4],
+        // All vertical tests use extrema of ORIGINAL rectangles, never the envelope.
+        min_height: f32,
+        max_height: f32,
+        min_bottom: f32,
+        max_bottom: f32,
+        max_top: f32,
+    }
+    impl Group {
+        fn new(rect: [f32; 4]) -> Self {
+            let height = rect[3] - rect[1];
+            Self { bounds: rect, min_height: height, max_height: height, min_bottom: rect[3], max_bottom: rect[3], max_top: rect[1] }
+        }
+        fn try_merge(&mut self, other: &Self) -> bool {
+            let small = self.min_height.min(other.min_height);
+            let large = self.max_height.max(other.max_height);
+            let bottom_min = self.min_bottom.min(other.min_bottom);
+            let bottom_max = self.max_bottom.max(other.max_bottom);
+            let top = self.max_top.max(other.max_top);
+            let gap = (other.bounds[0] - self.bounds[2]).max(self.bounds[0] - other.bounds[2]).max(0.0);
+            if small < large * 0.55 || bottom_min - top < small * 0.7 || bottom_max - bottom_min > large * 0.25 || gap > small * 0.4 {
+                return false;
+            }
+            self.bounds = [
+                self.bounds[0].min(other.bounds[0]),
+                self.bounds[1].min(other.bounds[1]),
+                self.bounds[2].max(other.bounds[2]),
+                self.bounds[3].max(other.bounds[3]),
+            ];
+            self.min_height = small;
+            self.max_height = large;
+            self.min_bottom = bottom_min;
+            self.max_bottom = bottom_max;
+            self.max_top = top;
+            true
+        }
+    }
+    fn by_y(a: &[f32; 4], b: &[f32; 4]) -> std::cmp::Ordering {
+        a[1].total_cmp(&b[1]).then(a[0].total_cmp(&b[0])).then(a[3].total_cmp(&b[3])).then(a[2].total_cmp(&b[2]))
+    }
+    let mut sorted: Vec<_> = regions
+        .iter()
+        .copied()
+        .filter(|r| r.iter().all(|v| v.is_finite()) && r[2] > r[0] && r[3] > r[1] && (r[2] - r[0]).is_finite() && (r[3] - r[1]).is_finite())
+        .collect();
+    sorted.sort_by(by_y);
+    // Fixed-size array indexes are statically in range. Both passes inspect at most
+    // 32 neighboring groups per input, within the renderer's source-region cap.
+    let mut groups: Vec<Group> = Vec::new();
+    for rect in sorted {
+        let next = Group::new(rect);
+        if !groups.iter_mut().rev().take(32).any(|group| group.try_merge(&next)) {
+            groups.push(next);
+        }
+    }
+    // Ascenders are visited before x-height letters in the first pass. Those later
+    // letters can bridge initial islands, so reconcile left-to-right once. Retained
+    // source extrema prevent transitive vertical drift or union-height gap expansion.
+    groups.sort_by(|a, b| {
+        a.bounds[0]
+            .total_cmp(&b.bounds[0])
+            .then(a.bounds[1].total_cmp(&b.bounds[1]))
+            .then(a.bounds[2].total_cmp(&b.bounds[2]))
+            .then(a.bounds[3].total_cmp(&b.bounds[3]))
+    });
+    let mut joined: Vec<Group> = Vec::new();
+    for next in groups {
+        if !joined.iter_mut().rev().take(32).any(|group| group.try_merge(&next)) {
+            joined.push(next);
+        }
+    }
+    let mut result: Vec<_> = joined.into_iter().map(|group| group.bounds).collect();
+    result.sort_by(by_y);
+    result
+}
+
+/// Restore navigation across an identity epoch only when the complete structure still
+/// identifies the same ordered tag/content bindings. Descriptive metadata may differ;
+/// no mutation draft or confirmation is rebased by this comparison.
+fn same_structure_bindings(a: &TagTree, b: &TagTree) -> bool {
+    a.root == b.root
+        && a.pages == b.pages
+        && a.children == b.children
+        && a.namespaces == b.namespaces
+        && a.role_map == b.role_map
+        && a.preserved_associations == b.preserved_associations
+        && a.edit_blockers == b.edit_blockers
+        && a.elements.len() == b.elements.len()
+        && a.elements.iter().zip(&b.elements).all(|(a, b)| {
+            a.id == b.id
+                && a.parent == b.parent
+                && a.role == b.role
+                && a.standard_role == b.standard_role
+                && a.namespace == b.namespace
+                && a.namespace_uri == b.namespace_uri
+                && a.standard_namespace_uri == b.standard_namespace_uri
+                && a.identifier == b.identifier
+                && a.page == b.page
+                && a.page_index == b.page_index
+                && a.kids == b.kids
+        })
+}
+
 fn update_highlight(state: &mut State, tree: &TagTree, doc: &Document, page: usize) {
     let key = (state.selected, page, state.highlight);
     if state.highlighted == Some(key) {
@@ -551,7 +823,7 @@ fn update_highlight(state: &mut State, tree: &TagTree, doc: &Document, page: usi
                     _ => None,
                 };
                 if let Some(regions) = regions {
-                    marks.extend(regions.iter().copied().map(|r| (page, r)));
+                    marks.extend(display_regions(regions).into_iter().map(|r| (page, r)));
                 }
             }
             state.geometry_notice = if !content.issues.is_empty() {
@@ -574,30 +846,63 @@ pub(crate) struct PanelContext<'a> {
     pub text_selection: Option<(usize, Vec<[f32; 4]>)>,
 }
 
+/// A tree row is a keyboard target, not a text editor. Document Undo/Redo may run here,
+/// but must never steal text history or run underneath a tag window.
+pub(crate) fn tree_has_focus(state: &State, ctx: &egui::Context, document: pdfcraft_engine::DocId) -> bool {
+    !(state.properties_open || state.role_map.open || state.move_dialog.open || state.delete.is_some() || state.artifact.is_some())
+        && state.focused_row.is_some_and(|node| ctx.memory(|m| m.focused()) == Some(egui::Id::new(("accessibility-tag-row", document, node))))
+}
+
+/// Called before global shortcuts, only for the active document's visible tag panel.
+pub(crate) fn shortcuts(state: &mut State, ctx: &egui::Context, document: pdfcraft_engine::DocId) -> bool {
+    if state.properties_open || state.role_map.open || state.move_dialog.open || state.delete.is_some() || state.artifact.is_some() {
+        return true;
+    }
+    if tree_has_focus(state, ctx, document) && ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, Key::F)) {
+        state.search_open = true;
+        state.search_focus = true;
+        return true;
+    }
+    false
+}
+
 /// Render the panel and return at most one transactional edit per frame.
 pub(crate) fn panel(ui: &mut egui::Ui, t: &Tokens, state: &mut State, context: PanelContext<'_>, nav: &mut Option<Nav>) -> Option<Edit> {
     let PanelContext { doc, modal, current_page, text_selection } = context;
-    let modal = modal || state.role_map.open || state.move_dialog.open;
+    let external_modal = modal;
+    let modal = modal || state.role_map.open || state.move_dialog.open || state.properties_open || state.delete.is_some() || state.artifact.is_some();
     let generation = doc.edit_generation();
     let identity_generation = doc.object_identity_generation();
-    if state.identity_generation != Some(identity_generation) {
-        state.identity_generation = Some(identity_generation);
-        state.selected = None;
-        state.selected_tags.clear();
-        state.anchor = None;
-        state.expanded.clear();
-        state.delete = None;
-        state.matches.clear();
-        state.highlighted = None;
-        // A dirty draft stays visible but stale, so the user can copy it before cancelling.
-        if !state.draft.as_ref().is_some_and(Draft::changed) {
-            state.draft = None;
-        }
-        state.initialized = false;
-    }
-    if state.generation != Some(generation) {
+    let identity_changed = state.identity_generation != Some(identity_generation);
+    if state.generation != Some(generation) || identity_changed {
         let changed = state.generation.is_some();
-        match doc.tags() {
+        let current_tree = doc.tags();
+        let preserve_navigation =
+            current_tree.as_ref().ok().zip(state.tree.as_ref()).is_some_and(|(current, previous)| same_structure_bindings(previous, current));
+        if identity_changed {
+            state.identity_generation = Some(identity_generation);
+            state.delete = None;
+            state.artifact = None;
+            if !preserve_navigation {
+                if let Some(focused) = state.focused_row {
+                    ui.memory_mut(|m| m.surrender_focus(egui::Id::new(("accessibility-tag-row", doc.id, focused))));
+                }
+                state.selected = None;
+                state.selected_tags.clear();
+                state.focused_row = None;
+                state.pending_focus = None;
+                state.focus_properties = false;
+                state.anchor = None;
+                state.expanded.clear();
+                state.reveal = false;
+                state.initialized = false;
+            }
+            // Keep dirty text visible but stale; never retarget or rebase its generation.
+            if !state.draft.as_ref().is_some_and(Draft::changed) {
+                state.draft = None;
+            }
+        }
+        match current_tree {
             Ok(tree) => {
                 state.tree = Some(tree);
                 state.error = None;
@@ -608,8 +913,8 @@ pub(crate) fn panel(ui: &mut egui::Ui, t: &Tokens, state: &mut State, context: P
             }
         }
         state.generation = Some(generation);
-        state.pending_focus = None;
         state.geometry.clear();
+        state.geometry_notice = None;
         state.highlighted = None;
         state.marks.clear();
         state.matches.clear();
@@ -627,8 +932,15 @@ pub(crate) fn panel(ui: &mut egui::Ui, t: &Tokens, state: &mut State, context: P
             if let Some(tree) = &state.tree {
                 state.selected_tags.retain(|id| tree.element(*id).is_some());
             }
-            if matches!(state.selected, Some(Node::Content(..))) {
+            if matches!(state.selected, Some(Node::Content(..))) && !preserve_navigation {
+                if let Some(focused) = state.focused_row {
+                    ui.memory_mut(|m| m.surrender_focus(egui::Id::new(("accessibility-tag-row", doc.id, focused))));
+                }
                 state.selected = None;
+                state.focused_row = None;
+                state.pending_focus = None;
+                state.anchor = None;
+                state.reveal = false;
             }
             // An applied edit or undo invalidates the cached projection. Reload unchanged drafts;
             // retain an in-progress draft as stale rather than silently overwriting user input.
@@ -647,10 +959,11 @@ pub(crate) fn panel(ui: &mut egui::Ui, t: &Tokens, state: &mut State, context: P
         return None;
     }
     let tree = state.tree.take()?;
-    let editable = doc.allows_modification() && doc.read_only_reason.is_none() && tree.issues.is_empty();
-    let dialog_open = state.role_map.open || state.move_dialog.open;
+    let properties_editable = doc.allows_modification() && doc.read_only_reason.is_none() && doc.tag_edit_read_only_reason().is_none();
+    let editable = properties_editable && tree.edit_blockers.is_empty();
+    let dialog_open = state.role_map.open || state.move_dialog.open || state.properties_open || state.delete.is_some() || state.artifact.is_some();
     let modal = modal || dialog_open;
-    if dialog_open {
+    if modal {
         ui.disable();
     }
     let structure_editable = editable && !modal && !state.draft.as_ref().is_some_and(Draft::changed);
@@ -660,10 +973,21 @@ pub(crate) fn panel(ui: &mut egui::Ui, t: &Tokens, state: &mut State, context: P
     let mut new = None;
     let mut delete = None;
     ui.horizontal(|ui| {
-        if ui.add_enabled(editable, egui::Button::new(tl!("New tag"))).clicked() {
+        let selected_tag = matches!(state.selected, Some(Node::Tag(_))) && state.selected_tags.len() == 1;
+        if ui.add_enabled(selected_tag, egui::Button::new(tl!("Properties…"))).on_hover_text(tl!("Tag properties (F2)")).clicked() {
+            selected = state.selected;
+            state.focus_properties = true;
+        }
+        if icons::button(ui, "search", 28.0, state.search_open, tl!("Search tags")).clicked() {
+            state.search_open = !state.search_open;
+            if !state.search_open {
+                state.filter.clear();
+            }
+        }
+        if ui.add_enabled_ui(structure_editable, |ui| icons::button(ui, "plus", 28.0, false, tl!("New tag"))).inner.clicked() {
             new = Some((None, tree.children.len()));
         }
-        let more = icons::button(ui, "ellipsis", 26.0, false, tl!("Tag options"));
+        let more = icons::button(ui, "ellipsis", 28.0, false, tl!("Tag options"));
         egui::Popup::menu(&more).show(|ui| {
             if ui.button(tl!("Expand all tags")).clicked() {
                 state.expanded.extend(tree.elements.iter().map(|e| e.id));
@@ -674,53 +998,71 @@ pub(crate) fn panel(ui: &mut egui::Ui, t: &Tokens, state: &mut State, context: P
                 ui.close();
             }
             ui.checkbox(&mut state.show_content, tl!("Show content items"));
+            ui.checkbox(&mut state.highlight, tl!("Highlight content"));
+            ui.separator();
+            if ui.toggle_value(&mut state.pick_content, tl!("Select content on page")).clicked() {
+                ui.close();
+            }
+            if ui.add_enabled(text_selection.is_some(), egui::Button::new(tl!("Find tag from selection"))).clicked() {
+                state.hit_request = text_selection.clone();
+                ui.close();
+            }
             if ui.add_enabled(structure_editable, egui::Button::new(tl!("Edit role mappings…"))).clicked() {
                 state.role_map = crate::tag_dialogs::RoleMapState::begin(doc);
                 ui.close();
             }
+            if !tree.issues.is_empty() && ui.button(tl!("Structure warnings")).clicked() {
+                state.warnings_open = true;
+                ui.close();
+            }
         });
-        ui.label(
-            egui::RichText::new(crate::i18n::fmt(tl!("{count} tags"), &[("count", &tree.elements.len().to_string())])).small().color(t.text_muted),
-        );
     });
-    let filter_label = ui.label(tl!("Find tags"));
-    ui.add(egui::TextEdit::singleline(&mut state.filter).hint_text(tl!("Type, title or text")).desired_width(f32::INFINITY))
-        .labelled_by(filter_label.id);
-    if !editable {
-        ui.label(tl!("This document does not allow structure editing."));
+    let find_key = !modal && tree_has_focus(state, ui.ctx(), doc.id) && ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, Key::F));
+    if find_key {
+        state.search_open = true;
     }
-    if !tree.issues.is_empty() {
-        egui::CollapsingHeader::new(tl!("Structure warnings")).show(ui, |ui| {
-            for issue in &tree.issues {
-                ui.label(issue);
+    if state.search_open {
+        let input = ui.add(egui::TextEdit::singleline(&mut state.filter).hint_text(tl!("Find tags")).desired_width(f32::INFINITY));
+        input.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, ui.is_enabled(), tl!("Find tags")));
+        if find_key || std::mem::take(&mut state.search_focus) {
+            input.request_focus();
+        }
+    }
+    if let Some(reason) = doc.tag_edit_read_only_reason() {
+        ui.label(reason);
+    } else if !properties_editable {
+        ui.label(tl!("This document does not allow structure editing."));
+    } else if !editable {
+        ui.horizontal_wrapped(|ui| {
+            ui.small(tl!("Structure is read-only. Metadata can still be edited."));
+            if ui.small_button(tl!("Details")).clicked() {
+                state.warnings_open = true;
             }
         });
     }
-    ui.horizontal_wrapped(|ui| {
-        ui.checkbox(&mut state.highlight, tl!("Highlight content"));
-        ui.toggle_value(&mut state.pick_content, tl!("Select content on page"));
-        if ui.add_enabled(text_selection.is_some(), egui::Button::new(tl!("Find tag from selection"))).clicked() {
-            state.hit_request = text_selection.clone();
-        }
-    });
     if state.pick_content {
-        ui.label(tl!("Click page content to find its tag. Escape cancels."));
+        ui.small(tl!("Click page content to find its tag. Escape cancels."));
     }
     if let Some((page, regions)) = state.hit_request.take() {
         find_from_regions(state, &tree, doc, page, &regions);
     }
     if !state.matches.is_empty() {
-        ui.label(format!("{} {}", state.matches.len(), tl!("matching tags")));
-        for id in state.matches.clone() {
-            if let Some(e) = element(&tree, id)
-                && ui.button(format!("{} <{}> {}", tl!("Reveal"), e.role, e.title.as_deref().unwrap_or(""))).clicked()
-            {
-                state.filter.clear();
-                reveal_ancestors(state, &tree, id);
-                selected = Some(Node::Tag(id));
-                state.reveal = true;
+        let matches_label = format!("{} {}", state.matches.len(), tl!("matching tags"));
+        let response = egui::ComboBox::from_id_salt("tag-hit-matches").selected_text(&matches_label).show_ui(ui, |ui| {
+            for id in state.matches.clone() {
+                if let Some(e) = element(&tree, id)
+                    && ui
+                        .selectable_label(state.selected == Some(Node::Tag(id)), format!("<{}> {}", e.role, e.title.as_deref().unwrap_or("")))
+                        .clicked()
+                {
+                    state.filter.clear();
+                    reveal_ancestors(state, &tree, id);
+                    selected = Some(Node::Tag(id));
+                    state.reveal = true;
+                }
             }
-        }
+        });
+        response.response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::ComboBox, ui.is_enabled(), &matches_label));
     }
     let visible = rows(&tree, state);
     if visible.is_empty() {
@@ -729,14 +1071,8 @@ pub(crate) fn panel(ui: &mut egui::Ui, t: &Tokens, state: &mut State, context: P
         ui.label(egui::RichText::new(tl!("Creating a tag does not automatically associate page content.")).small().color(t.text_muted));
     }
     let row_id = |node: Node| egui::Id::new(("accessibility-tag-row", doc.id, node));
-    let footer_height = if state.delete.is_some() || state.artifact.is_some() {
-        260.0
-    } else if state.draft.is_some() {
-        470.0
-    } else {
-        90.0
-    };
-    let tree_height = (ui.available_height() - footer_height).max(140.0);
+    // Independent windows keep the tree height unchanged when selection changes.
+    let tree_height = (ui.available_height() - 30.0).max(60.0);
     let scroll = egui::ScrollArea::vertical().id_salt("tag-tree-scroll").max_height(tree_height).auto_shrink([false, false]);
     let scroll = if state.reveal {
         let index = state.selected.and_then(|n| visible.iter().position(|r| r.node == n)).unwrap_or(0);
@@ -783,7 +1119,7 @@ pub(crate) fn panel(ui: &mut egui::Ui, t: &Tokens, state: &mut State, context: P
                     m.set_focus_lock_filter(response.id, egui::EventFilter { horizontal_arrows: true, vertical_arrows: true, ..Default::default() })
                 });
             }
-            response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, selected_row, &row.label));
+            response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, ui.is_enabled(), selected_row, &row.label));
             ui.ctx().accesskit_node_builder(response.id, |node| {
                 node.set_role(egui::accesskit::Role::TreeItem);
                 node.set_level(row.depth + 1);
@@ -797,7 +1133,10 @@ pub(crate) fn panel(ui: &mut egui::Ui, t: &Tokens, state: &mut State, context: P
             if selected_row || response.hovered() {
                 ui.painter().rect_filled(rect, 4.0, if selected_row { t.selected } else { t.hover });
             }
-            let indent = (row.depth as f32 * 14.0).min((rect.width() - 120.0).max(0.0));
+            if response.has_focus() {
+                ui.painter().rect_stroke(rect.shrink(1.0), 4.0, egui::Stroke::new(1.0, t.accent), egui::StrokeKind::Inside);
+            }
+            let indent = (row.depth as f32 * 17.0).min((rect.width() - 120.0).max(0.0));
             let disclosure = egui::Rect::from_min_size(rect.min + egui::vec2(indent, 2.0), egui::vec2(23.0, 24.0));
             if let Node::Tag(id) = row.node {
                 if row.expandable {
@@ -812,7 +1151,7 @@ pub(crate) fn panel(ui: &mut egui::Ui, t: &Tokens, state: &mut State, context: P
                     toggle.widget_info(|| {
                         egui::WidgetInfo::labeled(
                             egui::WidgetType::Button,
-                            true,
+                            ui.is_enabled(),
                             format!("{} {}", if state.expanded.contains(&id) { tl!("Collapse") } else { tl!("Expand") }, row.label),
                         )
                     });
@@ -968,10 +1307,13 @@ pub(crate) fn panel(ui: &mut egui::Ui, t: &Tokens, state: &mut State, context: P
                 selection_modifiers = ui.input(|i| i.modifiers);
                 response.request_focus();
             }
-            if response.double_clicked()
-                && let Some(p) = row.page
-            {
-                *nav = Some(Nav::Page(p));
+            if response.double_clicked() {
+                if matches!(row.node, Node::Tag(_)) {
+                    selected = Some(row.node);
+                    state.focus_properties = true;
+                } else if let Some(p) = row.page {
+                    *nav = Some(Nav::Page(p));
+                }
             }
         }
     });
@@ -1062,8 +1404,6 @@ pub(crate) fn panel(ui: &mut egui::Ui, t: &Tokens, state: &mut State, context: P
             };
             if let Some(focus) = focus {
                 load_draft(state, &tree, focus, generation);
-                // Opening the inspector reduces the next frame's tree viewport. Keep a
-                // pointer-selected lower row visible after that layout change as well.
                 state.reveal = true;
                 if !selection_modifiers.shift {
                     state.anchor = Some(focus);
@@ -1104,48 +1444,46 @@ pub(crate) fn panel(ui: &mut egui::Ui, t: &Tokens, state: &mut State, context: P
         };
         state.delete = Some((ids, generation));
     }
-    if let Some(node) = state.selected
-        && let Some(row) = visible.iter().find(|r| r.node == node)
-    {
-        ui.horizontal(|ui| {
-            if ui.add_enabled(row.page.is_some(), egui::Button::new(tl!("Go to page"))).clicked()
-                && let Some(p) = row.page
-            {
-                *nav = Some(Nav::Page(p));
-            }
-            if let Node::Tag(id) = node {
-                ui.label(egui::RichText::new(crate::i18n::fmt(tl!("Object {id}"), &[("id", &id.to_string())])).small().color(t.text_muted));
-            }
-        });
-    }
-    if let Some((ids, delete_generation)) = state.delete.clone() {
+    if !external_modal && let Some((ids, delete_generation)) = state.delete.clone() {
         let id = ids.first().copied()?;
-        ui.separator();
-        let target = element(&tree, id)
-            .map(|e| format!("<{}> {} ({id})", e.role, e.title.as_deref().unwrap_or("").chars().take(60).collect::<String>()))
-            .unwrap_or_else(|| id.to_string());
-        ui.label(format!(
-            "{} {target}{}",
-            tl!("Selected for deletion:"),
-            if ids.len() > 1 { crate::i18n::fmt(tl!(" + {count} tags"), &[("count", &(ids.len() - 1).to_string())]) } else { String::new() }
-        ));
-        ui.label(tl!("Delete tag structure? Page artwork stays unchanged; it does not become an artifact."));
-        ui.horizontal_wrapped(|ui| {
-            if ui.add_enabled(structure_editable && delete_generation == generation, egui::Button::new(tl!("Unwrap tag"))).clicked() {
-                edit = Some(Edit::DeleteTags { ids: ids.clone(), mode: DeleteMode::Unwrap });
-                state.delete = None;
-            }
-            if ui.add_enabled(structure_editable && delete_generation == generation, egui::Button::new(tl!("Delete subtree"))).clicked() {
-                edit = Some(Edit::DeleteTags { ids: ids.clone(), mode: DeleteMode::Subtree });
-                state.delete = None;
-            }
-            if ui.button(tl!("Keep tag")).clicked() {
-                state.delete = None;
-            }
-        });
+        let mut keep_open = true;
+        egui::Window::new(tl!("Delete tags"))
+            .id(egui::Id::new("tag-delete-confirmation"))
+            .open(&mut keep_open)
+            .collapsible(false)
+            .default_width(440.0)
+            .show(ui.ctx(), |ui| {
+                let target = element(&tree, id)
+                    .map(|e| format!("<{}> {} ({id})", e.role, e.title.as_deref().unwrap_or("").chars().take(60).collect::<String>()))
+                    .unwrap_or_else(|| id.to_string());
+                ui.label(format!(
+                    "{} {target}{}",
+                    tl!("Selected for deletion:"),
+                    if ids.len() > 1 { crate::i18n::fmt(tl!(" + {count} tags"), &[("count", &(ids.len() - 1).to_string())]) } else { String::new() }
+                ));
+                ui.label(tl!("Delete tag structure? Page artwork stays unchanged; it does not become an artifact."));
+                ui.horizontal_wrapped(|ui| {
+                    if ui.add_enabled(editable && delete_generation == generation, egui::Button::new(tl!("Unwrap tag"))).clicked() {
+                        edit = Some(Edit::DeleteTags { ids: ids.clone(), mode: DeleteMode::Unwrap });
+                        state.delete = None;
+                    }
+                    if ui.add_enabled(editable && delete_generation == generation, egui::Button::new(tl!("Delete subtree"))).clicked() {
+                        edit = Some(Edit::DeleteTags { ids: ids.clone(), mode: DeleteMode::Subtree });
+                        state.delete = None;
+                    }
+                    if ui.button(tl!("Keep tag")).clicked() {
+                        state.delete = None;
+                    }
+                });
+            });
+        if !keep_open || ui.ctx().input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::Escape)) {
+            state.delete = None;
+            state.pending_focus = state.selected;
+        }
     }
-    if let Some((ids, request_generation)) = state.artifact.clone() {
-        ui.separator();
+    if !external_modal && let Some((ids, request_generation)) = state.artifact.clone() {
+        let mut keep_open = true;
+        egui::Window::new(tl!("Convert to artifact")).id(egui::Id::new("tag-artifact-confirmation")).open(&mut keep_open).collapsible(false).default_width(460.0).show(ui.ctx(), |ui| {
         let names = ids
             .iter()
             .filter_map(|id| element(&tree, *id))
@@ -1157,7 +1495,7 @@ pub(crate) fn panel(ui: &mut egui::Ui, t: &Tokens, state: &mut State, context: P
         ui.label(tl!("The selected tags and descendants will be removed from the accessibility tree. Their marked content becomes decorative; page artwork stays visible."));
         ui.label(egui::RichText::new(tl!("Ambiguous, reused or unsupported content is refused without changing the document.")).small());
         ui.horizontal_wrapped(|ui| {
-            if ui.add_enabled(structure_editable && request_generation == generation, egui::Button::new(tl!("Convert marked content"))).clicked() {
+            if ui.add_enabled(editable && request_generation == generation, egui::Button::new(tl!("Convert marked content"))).clicked() {
                 edit = Some(Edit::Batch {
                     label: "Convert selected tags to artifacts".into(),
                     edits: ids.iter().map(|id| Edit::ArtifactTag { id: *id, include_descendants: true }).collect(),
@@ -1167,49 +1505,88 @@ pub(crate) fn panel(ui: &mut egui::Ui, t: &Tokens, state: &mut State, context: P
                 state.artifact = None;
             }
         });
+        });
+        if !keep_open || ui.ctx().input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::Escape)) {
+            state.artifact = None;
+            state.pending_focus = state.selected;
+        }
     }
-    if state.selected_tags.len() > 1 {
-        ui.label(format!("{} {}", state.selected_tags.len(), tl!("tags selected")));
+    if state.focus_properties && state.draft.is_some() {
+        state.properties_open = true;
     }
-    if edit.is_none() {
+    let auxiliary_was_open = state.role_map.open || state.move_dialog.open;
+    if !external_modal && edit.is_none() {
         edit = crate::tag_dialogs::role_map(ui.ctx(), doc, &tree, &mut state.role_map);
     }
-    if edit.is_none() {
+    if !external_modal && edit.is_none() {
         edit = crate::tag_dialogs::move_destination(ui.ctx(), doc, &tree, &mut state.move_dialog);
     }
-    if let Some(Node::Tag(id)) = state.selected
-        && let Some(e) = element(&tree, id)
-    {
-        if e.role != e.standard_role {
-            ui.label(format!("{} {}", tl!("Mapped type:"), e.standard_role));
-        }
-        if let Some(identifier) = &e.identifier {
-            ui.label(format!("{} {}", tl!("Tag ID:"), identifier));
-        }
+    if !external_modal && edit.is_none() && state.delete.is_none() && state.artifact.is_none() {
+        edit = properties(ui.ctx(), state, &tree, properties_editable, editable, generation);
     }
-    if let Some(notice) = &state.notice {
-        ui.label(notice);
+    if auxiliary_was_open && !state.role_map.open && !state.move_dialog.open {
+        state.pending_focus = state.selected;
+        state.reveal = true;
     }
-    if edit.is_none() && state.delete.is_none() && state.artifact.is_none() {
-        if state.role_map.open || state.move_dialog.open {
-            ui.disable();
-        }
-        edit = properties(ui, state, editable, generation);
+    if !external_modal && state.warnings_open {
+        egui::Window::new(tl!("Structure warnings"))
+            .id(egui::Id::new("tag-structure-warnings"))
+            .open(&mut state.warnings_open)
+            .default_width(460.0)
+            .show(ui.ctx(), |ui| {
+                egui::ScrollArea::vertical().max_height(340.0).show(ui, |ui| {
+                    for warning in &tree.issues {
+                        ui.label(warning);
+                    }
+                });
+            });
     }
     let page = match nav {
         Some(Nav::Page(page)) | Some(Nav::Flash(page, _)) => *page,
         None => current_page,
     };
     update_highlight(state, &tree, doc, page);
-    if let Some(notice) = &state.geometry_notice {
-        ui.label(egui::RichText::new(notice).small().color(t.text_muted));
-    }
+    ui.horizontal(|ui| {
+        let summary = if state.selected_tags.len() > 1 {
+            format!("{} {}", state.selected_tags.len(), tl!("tags selected"))
+        } else {
+            crate::i18n::fmt(
+                if tree.elements.len() == 1 { tl!("{count} tag") } else { tl!("{count} tags") },
+                &[("count", &tree.elements.len().to_string())],
+            )
+        };
+        ui.small(summary);
+        if !tree.issues.is_empty()
+            && ui.small_button(format!("{} {}", tree.issues.len(), if tree.issues.len() == 1 { tl!("warning") } else { tl!("warnings") })).clicked()
+        {
+            state.warnings_open = true;
+        }
+        if let Some(notice) = state.notice.as_ref().filter(|_| !state.properties_open) {
+            ui.label(egui::RichText::new(tl!("Action needed")).small().color(t.text_muted)).on_hover_text(notice);
+        }
+        if state.highlight
+            && let Some(notice) = &state.geometry_notice
+        {
+            let label = if state.marks.is_empty() {
+                tl!("Content bounds unavailable")
+            } else if notice == tl!("Outlines show content selection bounds, not pixel-exact painted shapes.") {
+                tl!("Content highlighted")
+            } else {
+                tl!("Approximate content bounds")
+            };
+            ui.label(egui::RichText::new(label).small().color(t.text_muted)).on_hover_text(notice);
+        }
+    });
     state.tree = Some(tree);
     edit
 }
 
 /// Called only when the engine accepted an edit, so failed edits retain their draft.
 pub(crate) fn applied(state: &mut State) {
+    state.properties_open = false;
+    state.focus_properties = false;
+    state.pending_focus = state.selected;
+    state.reveal = true;
     state.draft = None;
     state.notice = None;
     state.delete = None;
@@ -1227,4 +1604,85 @@ pub(crate) fn failed(state: &mut State, message: String) {
         state.move_dialog.error = Some(message.clone());
     }
     state.notice = Some(message);
+}
+
+#[cfg(test)]
+mod display_region_tests {
+    use super::display_regions;
+    // Exact PageTagContent MCID0 geometry captured from the contributor-original
+    // accessibility-demo.pdf, "Introduction" in repository OFL Inter SemiBold 26pt.
+    const INTRODUCTION: [[f32; 4]; 12] = [
+        [39.9045, 36.083782, 43.293842, 55.0],
+        [46.950397, 40.628906, 59.35362, 55.0],
+        [61.359375, 37.429688, 69.81466, 55.190533],
+        [72.03634, 40.616314, 80.09756, 55.0],
+        [81.73525, 40.628906, 95.30685, 55.292095],
+        [97.56631, 36.083782, 110.921776, 55.253906],
+        [114.413284, 40.80644, 126.8291, 55.177937],
+        [129.71083, 40.628906, 142.64746, 55.292095],
+        [143.98047, 37.429688, 152.43575, 55.190533],
+        [154.39052, 35.18272, 158.2373, 55.0],
+        [160.83974, 40.628906, 174.41133, 55.292095],
+        [177.29317, 40.628906, 189.69638, 55.0],
+    ];
+    #[test]
+    fn real_inter_heading_is_one_envelope_independent_of_input_order() {
+        let expected = vec![[39.9045, 35.18272, 189.69638, 55.292095]];
+        assert_eq!(display_regions(&INTRODUCTION), expected);
+        for rotation in 0..INTRODUCTION.len() {
+            let mut shuffled = INTRODUCTION;
+            shuffled.rotate_left(rotation);
+            assert_eq!(display_regions(&shuffled), expected);
+            shuffled.reverse();
+            assert_eq!(display_regions(&shuffled), expected);
+        }
+    }
+    #[test]
+    fn original_extrema_stop_two_sided_baseline_growth() {
+        let regions = [[0.0, 2.0, 5.0, 12.0], [6.0, 0.0, 11.0, 10.0], [12.0, 4.0, 17.0, 14.0]];
+        let result = display_regions(&regions);
+        assert_eq!(result.len(), 2);
+        assert!(!result.contains(&[0.0, 0.0, 17.0, 14.0]));
+        let mut shuffled = regions;
+        shuffled.reverse();
+        assert_eq!(display_regions(&shuffled), result);
+    }
+    #[test]
+    fn groups_adjacent_glyphs_and_small_spaces_but_not_columns_or_lines() {
+        let source = [[20.0, 10.0, 25.0, 20.0], [10.0, 10.0, 16.0, 20.0], [100.0, 10.0, 106.0, 20.0], [10.0, 24.0, 16.0, 34.0]];
+        assert_eq!(display_regions(&source), vec![[10.0, 10.0, 25.0, 20.0], [100.0, 10.0, 106.0, 20.0], [10.0, 24.0, 16.0, 34.0]]);
+        assert_eq!(source[0], [20.0, 10.0, 25.0, 20.0]);
+    }
+    #[test]
+    fn mixed_case_uses_baseline_without_joining_superscripts_or_tall_shapes() {
+        let source = [[0.0, 10.0, 5.0, 20.0], [6.0, 13.0, 10.0, 20.0], [11.0, 13.0, 15.0, 22.0], [16.0, 5.0, 19.0, 10.0], [20.0, 0.0, 25.0, 25.0]];
+        let result = display_regions(&source);
+        assert!(result.contains(&[0.0, 10.0, 15.0, 22.0]));
+        assert!(result.contains(&[16.0, 5.0, 19.0, 10.0]));
+        assert!(result.contains(&[20.0, 0.0, 25.0, 25.0]));
+        assert_eq!(result.len(), 3);
+    }
+    #[test]
+    fn preserves_rotated_baselines_negative_coordinates_and_rejects_nonfinite_bounds() {
+        let source = [
+            [-20.0, -10.0, -15.0, 0.0],
+            [-14.0, -10.0, -9.0, 0.0],
+            [30.0, 0.0, 35.0, 10.0],
+            [36.0, 4.0, 41.0, 14.0],
+            [42.0, 8.0, 47.0, 18.0],
+            [f32::NAN, 0.0, 1.0, 2.0],
+            [0.0, 0.0, f32::INFINITY, 2.0],
+            [2.0, 0.0, 1.0, 2.0],
+        ];
+        let result = display_regions(&source);
+        assert_eq!(result.len(), 4);
+        assert!(result.contains(&[-20.0, -10.0, -9.0, 0.0]));
+    }
+    #[test]
+    fn baseline_anchor_does_not_drift_into_another_line() {
+        assert_eq!(
+            display_regions(&[[0.0, 0.0, 5.0, 10.0], [6.0, 2.0, 11.0, 12.0], [12.0, 4.0, 17.0, 14.0]]),
+            vec![[0.0, 0.0, 11.0, 12.0], [12.0, 4.0, 17.0, 14.0]]
+        );
+    }
 }

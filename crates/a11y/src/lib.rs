@@ -19,7 +19,7 @@ mod report;
 mod structure;
 pub mod tags;
 
-pub use alt::{AltError, Figure, figures, mark_decorative, mark_decorative_with_budget, set_alt};
+pub use alt::{AltError, Figure, figures, mark_decorative, mark_decorative_with_budget, set_alt, try_figures};
 pub use report::report_html;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -482,12 +482,35 @@ pub fn check(doc: &Document, options: &Options) -> Report {
             Category::PageContent | Category::Forms => content::page_rule(doc, rule, &pages, &page_list, &scan, &tree),
             _ => tree.rule(rule),
         };
+        let structure_issues = tree.issues_for(rule);
+        let uncertain = !structure_issues.is_empty()
+            && (matches!(rule.category(), Category::AlternateText | Category::Tables | Category::Lists | Category::Headings)
+                || matches!(rule, Rule::TaggedPdf | Rule::TaggedContent | Rule::TaggedAnnotations | Rule::TaggedMultimedia | Rule::TaggedFormFields));
+        // Keep definite failures, but never suppress the fact that traversal was
+        // incomplete. Diagnostics alone are uncertainty, not proof of a failed rule.
+        let status = if !findings.is_empty() {
+            Status::Failed
+        } else if uncertain {
+            Status::Manual
+        } else {
+            Status::Passed
+        };
+        if uncertain {
+            findings.extend(
+                structure_issues.iter().map(|message| Finding { page: None, message: format!("Structure resolution incomplete: {message}") }),
+            );
+        }
         if findings.len() > MAX_FINDINGS {
             let more = findings.len() - MAX_FINDINGS;
-            findings.truncate(MAX_FINDINGS);
+            // Keep at least one uncertainty diagnostic even when definite findings
+            // fill the ordinary display budget.
+            let uncertainty = uncertain.then(|| findings.last().cloned()).flatten();
+            findings.truncate(MAX_FINDINGS.saturating_sub(usize::from(uncertainty.is_some())));
+            if let Some(diagnostic) = uncertainty {
+                findings.push(diagnostic);
+            }
             findings.push(Finding { page: None, message: format!("… and {more} more") });
         }
-        let status = if findings.is_empty() { Status::Passed } else { Status::Failed };
         results.push(RuleResult { rule, status, findings });
     }
     Report { results }
@@ -495,3 +518,6 @@ pub fn check(doc: &Document, options: &Options) -> Report {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod checker_tests;

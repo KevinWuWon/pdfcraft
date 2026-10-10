@@ -2346,7 +2346,7 @@ fn artifact_engine_preserves_rendering_save_reopen_and_undo() {
 }
 
 #[test]
-fn legacy_decorative_uses_exact_image_conversion_and_rejects_idtree_atomically() {
+fn legacy_decorative_uses_exact_image_conversion_and_prunes_idtree_undoably() {
     use pdfcraft_cos::{Dict, Object, Stream};
     let mut cos = pdfcraft_cos::Document::open(Arc::new(fixture(1))).unwrap();
     let figure = a11y::tags::create(&mut cos, None, 0, &a11y::tags::TagProperties { role: Some("Figure".into()), ..Default::default() }).unwrap();
@@ -2417,10 +2417,19 @@ fn legacy_decorative_uses_exact_image_conversion_and_rejects_idtree_atomically()
     let before = s.get(id).unwrap().bytes.clone();
     let tree = s.get(id).unwrap().tags().unwrap();
     let history = s.get(id).unwrap().can_undo().map(str::to_owned);
-    assert!(s.apply(id, Edit::MarkDecorative { figure: figure.num }).is_err());
+    s.apply(id, Edit::MarkDecorative { figure: figure.num }).unwrap();
+    assert!(s.get(id).unwrap().tags().unwrap().elements.is_empty());
+    assert_eq!(render(&s, id), pixels);
+    let saved = s.save_bytes(id).unwrap();
+    let reopened = s.open("decorative-id-saved.pdf", None, saved, None).unwrap();
+    assert!(s.get(reopened).unwrap().tags().unwrap().elements.is_empty());
+    assert_eq!(render(&s, reopened), pixels);
+    s.undo(id).unwrap();
     assert_eq!(s.get(id).unwrap().bytes, before);
     assert_eq!(s.get(id).unwrap().tags().unwrap(), tree);
     assert_eq!(s.get(id).unwrap().can_undo().map(str::to_owned), history);
+    s.redo(id).unwrap();
+    assert!(s.get(id).unwrap().tags().unwrap().elements.is_empty());
     assert_eq!(render(&s, id), pixels);
 }
 
@@ -2569,4 +2578,37 @@ fn nested_artifact_and_legacy_actions_share_one_decoded_budget() {
     assert_eq!(pdfcraft_cos::write_full(&cos, &Default::default()).unwrap(), original);
     let tree = a11y::tags::inspect(&cos).unwrap();
     assert!(tree.element(first).is_some() && tree.element(second).is_some());
+}
+
+#[test]
+fn regenerated_xfa_refuses_tag_edits_atomically_but_preserves_form_filling() {
+    let mut s = Session::new();
+    let bytes = Arc::new(pdfcraft_xfa::fixtures::shell(&pdfcraft_xfa::fixtures::template(1)));
+    let id = s.open("dynamic.pdf", None, bytes, None).unwrap();
+    let doc = s.get(id).unwrap();
+    assert!(doc.tag_edit_read_only_reason().unwrap().contains("regenerated"));
+    let before = (doc.bytes.clone(), doc.generation, doc.dirty);
+    let edit = Edit::Batch {
+        label: "Mixed draft".into(),
+        edits: vec![
+            Edit::SetFieldValue { name: "familyName".into(), value: FieldValue::Text("Uncommitted".into()) },
+            Edit::Batch {
+                label: "Nested tags".into(),
+                edits: vec![Edit::CreateTag {
+                    parent: None,
+                    index: 0,
+                    properties: a11y::tags::TagProperties { role: Some("Document".into()), ..Default::default() },
+                }],
+            },
+        ],
+    };
+    assert!(matches!(s.apply(id, edit), Err(EditError::ReadOnly(_))));
+    let doc = s.get(id).unwrap();
+    assert_eq!((doc.bytes.clone(), doc.generation, doc.dirty), before);
+    assert!(doc.can_undo().is_none() && doc.can_redo().is_none());
+    s.apply(id, Edit::SetFieldValue { name: "familyName".into(), value: FieldValue::Text("Remains editable".into()) }).unwrap();
+    let saved = s.save_bytes(id).unwrap();
+    let reopened = s.open("reopened.pdf", None, saved, None).unwrap();
+    assert!(s.get(reopened).unwrap().tag_edit_read_only_reason().is_some());
+    assert_eq!(s.get(reopened).unwrap().form.iter().find(|f| f.name == "familyName").unwrap().value, ["Remains editable"]);
 }

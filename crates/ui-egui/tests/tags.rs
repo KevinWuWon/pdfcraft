@@ -28,9 +28,12 @@ trailer << /Root 1 0 R >>
 %%EOF";
 
 fn harness() -> Harness<'static, PdfCraftApp> {
+    harness_bytes(TAGGED.to_vec())
+}
+fn harness_bytes(bytes: Vec<u8>) -> Harness<'static, PdfCraftApp> {
     let mut h = Harness::builder().with_size(egui::vec2(1440.0, 1000.0)).build_eframe(|_| {
         let mut app = PdfCraftApp::new();
-        app.open_bytes("tags.pdf", None, TAGGED.to_vec()).unwrap();
+        app.open_bytes("tags.pdf", None, bytes).unwrap();
         app.set_option("left", "closed").unwrap();
         app.set_option("panel", "tags").unwrap();
         app
@@ -52,6 +55,17 @@ fn tag_ids(h: &Harness<'static, PdfCraftApp>) -> Vec<u32> {
     tree(h).element(ObjRef::new(7, 0)).unwrap().kids.iter().filter_map(|k| if let TagKid::Element { id } = k { Some(id.num) } else { None }).collect()
 }
 
+fn open_properties(h: &mut Harness<'static, PdfCraftApp>) {
+    if h.query_by_label("Apply properties").is_none() {
+        h.get_by_label("Properties…").click();
+        h.run_steps(3);
+    }
+}
+fn open_search(h: &mut Harness<'static, PdfCraftApp>) {
+    h.get_by_label("Search tags").click();
+    h.run_steps(2);
+}
+
 #[test]
 fn pointer_selection_stays_visible_when_inspector_shrinks_tree() {
     let mut h = harness();
@@ -61,7 +75,9 @@ fn pointer_selection_stays_visible_when_inspector_shrinks_tree() {
     h.run_steps(4);
     let selected = h.get_by_label("<Figure> Chart");
     assert!(selected.accesskit_node().is_selected().unwrap_or(false));
-    assert!(selected.rect().bottom() < h.get_by_label("Go to page").rect().top(), "the selected row stays above the inspector footer");
+    assert!(selected.rect().bottom() < 780.0);
+    assert!(h.query_by_label("Apply properties").is_none());
+    open_properties(&mut h);
     h.get_by_label("Apply properties");
     h.get_by_label("Cancel properties");
 }
@@ -72,6 +88,7 @@ fn edit_properties_persist_and_undo() {
     assert_eq!(h.state().right, Some(RightPanel::Tags));
     h.get_by_label("<H1> Introduction").click();
     h.run_steps(3);
+    open_properties(&mut h);
     h.get_by_label("Title").click();
     h.key_press_modifiers(Modifiers::COMMAND, Key::A);
     h.get_by_label("Title").type_text("Overview");
@@ -129,6 +146,7 @@ fn keyboard_disclosure_navigation_and_property_focus() {
     h.key_press(Key::Enter);
     h.run_steps(2);
     assert_eq!(h.state().views[0].current, 1);
+    open_properties(&mut h);
     h.get_by_label("Title").click();
     h.key_press(Key::Home);
     h.key_press(Key::Delete);
@@ -143,6 +161,7 @@ fn keyboard_disclosure_navigation_and_property_focus() {
 fn new_child_filter_and_cancel_preserve_document() {
     let mut h = harness();
     menu(&mut h, "<Document>", "New child tag");
+    open_properties(&mut h);
     h.get_by_label("Title").click();
     h.get_by_label("Title").type_text("New section");
     h.run_steps(2);
@@ -150,6 +169,7 @@ fn new_child_filter_and_cancel_preserve_document() {
     h.run_steps(3);
     assert_eq!(tag_ids(&h).len(), 4);
     h.get_by_label("<P> New section");
+    open_search(&mut h);
     h.get_by_label("Find tags").click();
     h.get_by_label("Find tags").type_text("chart");
     h.run_steps(3);
@@ -158,6 +178,7 @@ fn new_child_filter_and_cancel_preserve_document() {
     assert!(h.query_by_label("<P> Body").is_none());
     h.get_by_label("<Figure> Chart").click();
     h.run_steps(2);
+    open_properties(&mut h);
     h.get_by_label("Alternate text").click();
     h.get_by_label("Alternate text").type_text(" discarded");
     h.run_steps(2);
@@ -171,17 +192,20 @@ fn dirty_reclick_and_stale_undo_do_not_discard_typed_properties() {
     let mut h = harness();
     h.get_by_label("<P> Body").click();
     h.run_steps(2);
+    open_properties(&mut h);
     h.get_by_label("Title").click();
     h.key_press_modifiers(Modifiers::COMMAND, Key::A);
     h.get_by_label("Title").type_text("Unapplied draft");
     h.run_steps(2);
-    h.get_by_label("<P> Body").click();
+    assert!(h.get_by_label("<P> Body").accesskit_node().is_disabled());
+    h.key_press(Key::Escape);
     h.run_steps(2);
     assert!(h.query_all_by_value("Unapplied draft").next().is_some());
     h.get_by_label("Apply properties").click();
     h.run_steps(3);
     h.get_by_label("<P> Unapplied draft").click();
     h.run_steps(2);
+    open_properties(&mut h);
     h.get_by_label("Title").click();
     h.key_press(Key::End);
     h.get_by_label("Title").type_text(" pending");
@@ -201,7 +225,8 @@ fn deleting_requires_current_named_target() {
     let mut h = harness();
     menu(&mut h, "<P> Body", "Delete tag…");
     h.get_by_label_contains("Selected for deletion: <P> Body");
-    h.get_by_label("<Figure> Chart").click();
+    assert!(h.get_by_label("<Figure> Chart").accesskit_node().is_disabled());
+    h.get_by_label("Keep tag").click();
     h.run_steps(2);
     assert!(h.query_by_label("Delete subtree").is_none());
     assert_eq!(tag_ids(&h), [8, 9, 10]);
@@ -230,6 +255,8 @@ fn drag_after_adjacent_sibling_preserves_mixed_child_order() {
 #[test]
 fn pick_painted_content_reveals_exact_owner_tag() {
     let mut h = harness();
+    h.get_by_label("Tag options").click();
+    h.run_steps(2);
     h.get_by_label("Select content on page").click();
     h.run_steps(2);
     let page = h.state().views[0].page_screen_rect(0).unwrap();
@@ -239,9 +266,9 @@ fn pick_painted_content_reveals_exact_owner_tag() {
     h.event(egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE });
     h.event(egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE });
     h.run_steps(4);
-    assert!(h.query_all_by_value("Introduction").next().is_some());
+    assert_eq!(h.get_by_label("<H1> Introduction").accesskit_node().is_selected(), Some(true));
     h.get_by_label("1 matching tags");
-    h.get_by_label("Outlines show content selection bounds, not pixel-exact painted shapes.");
+    h.get_by_label("Content highlighted");
 }
 
 #[test]
@@ -249,6 +276,7 @@ fn property_drafts_and_selection_stay_with_their_document() {
     let mut h = harness();
     h.get_by_label("<P> Body").click();
     h.run_steps(2);
+    open_properties(&mut h);
     h.get_by_label("Title").click();
     h.key_press(Key::End);
     h.get_by_label("Title").type_text(" first draft");
@@ -258,7 +286,7 @@ fn property_drafts_and_selection_stay_with_their_document() {
     assert!(h.query_by_label("Tag properties").is_none());
     h.get_by_label("<Figure> Chart").click();
     h.run_steps(2);
-    assert!(h.query_all_by_value("Chart").next().is_some());
+    assert_eq!(h.get_by_label("<Figure> Chart").accesskit_node().is_selected(), Some(true));
     h.state_mut().active = Some(0);
     h.run_steps(3);
     assert!(h.query_all_by_value("Body first draft").next().is_some());
@@ -293,6 +321,7 @@ fn large_tree_virtualizes_rows_and_search_retains_ancestors() {
     h.run_steps(3);
     h.get_by_label("10000 tags selected");
     assert!(h.query_all_by_role(egui::accesskit::Role::TreeItem).count() < 60, "offscreen rows are not allocated or painted");
+    open_search(&mut h);
     h.get_by_label("Find tags").click();
     h.get_by_label("Find tags").type_text("Item 9999");
     h.run_steps(3);
@@ -331,6 +360,7 @@ fn identifier_edit_persists_and_undoes() {
     let mut h = harness();
     h.get_by_label("<H1> Introduction").click();
     h.run_steps(2);
+    open_properties(&mut h);
     h.get_by_label("Tag ID").click();
     h.get_by_label("Tag ID").type_text("intro-heading");
     h.run_steps(2);
@@ -374,7 +404,8 @@ fn shift_arrow_extends_selection_and_artifact_target_clears() {
     h.run_steps(2);
     menu(&mut h, "<H1> Introduction", "Convert to artifact…");
     h.get_by_label("Convert marked content");
-    h.get_by_label("<P> Body").click();
+    assert!(h.get_by_label("<P> Body").accesskit_node().is_disabled());
+    h.get_by_label("Keep tagged content").click();
     h.run_steps(2);
     assert!(h.query_by_label("Convert marked content").is_none());
 }
@@ -387,6 +418,8 @@ fn keyboard_context_menus_reach_tag_and_content_moves() {
     h.key_press(Key::F2);
     h.run_steps(3);
     assert!(h.get_by_label("Type").accesskit_node().is_focused());
+    h.key_press(Key::Escape);
+    h.run_steps(3);
     h.get_by_label("<P> Body").click();
     h.run_steps(2);
     h.key_press_modifiers(Modifiers::SHIFT, Key::F10);
@@ -416,4 +449,350 @@ fn keyboard_context_menus_reach_tag_and_content_moves() {
     h.key_press(Key::Escape);
     h.run_steps(3);
     assert_eq!(tag_ids(&h), [8, 9, 10]);
+}
+
+#[test]
+fn compact_tree_keeps_height_on_selection_and_properties_are_on_demand() {
+    let mut pdf = String::from_utf8(TAGGED.to_vec()).unwrap();
+    let refs = (20..80).map(|n| format!("{n} 0 R ")).collect::<String>();
+    pdf = pdf.replace("/K [8 0 R 9 0 R 10 0 R]", &format!("/K [8 0 R 9 0 R 10 0 R {refs}]"));
+    let extra = (20..80).map(|n| format!("{n} 0 obj << /Type /StructElem /S /P /P 7 0 R /T (Item {n}) >> endobj\n")).collect::<String>();
+    pdf = pdf.replace("trailer <<", &format!("{extra}trailer <<"));
+    let mut h = harness_bytes(pdf.into_bytes());
+    h.set_size(egui::vec2(1178.0, 814.0));
+    h.run_steps(4);
+    let before = h.query_all_by_role(egui::accesskit::Role::TreeItem).count();
+    assert!(before >= 14, "the tree owns most panel height: {before} visible rows");
+    h.get_by_label("<H1> Introduction").click();
+    h.run_steps(3);
+    assert!(h.query_by_label("Title").is_none());
+    assert!(h.query_all_by_role(egui::accesskit::Role::TreeItem).count() >= before.saturating_sub(1));
+    h.key_press(Key::F2);
+    h.run_steps(4);
+    assert!(h.get_by_label("Type").accesskit_node().is_focused());
+    assert!(h.get_by_label("<H1> Introduction").accesskit_node().is_disabled());
+    h.set_size(egui::vec2(900.0, 600.0));
+    h.run_steps(4);
+    assert!(h.get_by_label("Apply properties").rect().bottom() < 600.0);
+    assert!(h.get_by_label("Cancel properties").rect().bottom() < 600.0);
+    h.get_by_label("Cancel properties").click();
+    h.run_steps(4);
+    assert!(h.get_by_label("<H1> Introduction").accesskit_node().is_focused());
+}
+
+#[test]
+fn tree_find_shortcut_and_dirty_close_keep_target_and_draft() {
+    let mut h = harness();
+    h.get_by_label("<P> Body").click();
+    h.run_steps(2);
+    h.key_press_modifiers(Modifiers::COMMAND, Key::F);
+    h.run_steps(3);
+    h.get_by_label("Find tags").type_text("Body");
+    h.run_steps(3);
+    h.get_by_label("<P> Body").click();
+    h.run_steps(2);
+    h.key_press(Key::F2);
+    h.run_steps(3);
+    h.get_by_label("Title").click();
+    h.key_press_modifiers(Modifiers::COMMAND, Key::A);
+    h.get_by_label("Title").type_text("Keep this draft");
+    h.run_steps(2);
+    h.key_press(Key::Escape);
+    h.run_steps(3);
+    h.get_by_label("Unsaved property changes. Apply them or choose Cancel properties to discard them.");
+    assert!(h.query_all_by_value("Keep this draft").next().is_some());
+    h.get_by_label_contains("<P> Body · 9 0 R");
+    assert_eq!(tree(&h).element(ObjRef::new(9, 0)).unwrap().title.as_deref(), Some("Body"));
+    h.get_by_label("Cancel properties").click();
+    h.run_steps(3);
+    assert!(h.query_by_label("Title").is_none());
+}
+
+#[test]
+fn app_modal_suspends_tag_properties_and_preserves_draft() {
+    let mut h = harness();
+    h.get_by_label("<P> Body").click();
+    h.run_steps(2);
+    open_properties(&mut h);
+    h.get_by_label("Title").click();
+    h.key_press_modifiers(Modifiers::COMMAND, Key::A);
+    h.get_by_label("Title").type_text("Suspended draft");
+    h.run_steps(2);
+    h.state_mut().dialog = Some(pdfcraft_ui_egui::Dialog::About);
+    h.run_steps(3);
+    assert!(h.query_by_label("Apply properties").is_none());
+    assert!(h.get_by_label("Properties…").accesskit_node().is_disabled());
+    h.state_mut().dialog = None;
+    h.run_steps(3);
+    assert!(h.query_all_by_value("Suspended draft").next().is_some());
+    h.get_by_label("Cancel properties").click();
+    h.run_steps(3);
+    assert_eq!(tree(&h).element(ObjRef::new(9, 0)).unwrap().title.as_deref(), Some("Body"));
+}
+
+#[test]
+fn unrelated_structure_warning_allows_metadata_but_not_type_or_id_edits() {
+    let bytes = String::from_utf8(TAGGED.to_vec())
+        .unwrap()
+        .replace("/Nums [0 [8 0 R] 1 []]", "/Nums [0 [8 0 R 8 0 R] 1 []]")
+        .replace("trailer <<", "99 0 obj << /Type /StructElem /S /P /K 1 /Pg 3 0 R >> endobj\ntrailer <<")
+        .into_bytes();
+    let mut h = harness_bytes(bytes);
+    let issues = tree(&h).issues.clone();
+    assert!(!issues.is_empty());
+    h.get_by_label("<H1> Introduction").click();
+    h.run_steps(3);
+    open_properties(&mut h);
+    assert!(h.get_by_label("Type").accesskit_node().is_disabled());
+    assert!(h.get_by_label("Tag ID").accesskit_node().is_disabled());
+    assert!(h.get_by_label("New tag").accesskit_node().is_disabled());
+    h.get_by_label("Title").click();
+    h.key_press_modifiers(Modifiers::COMMAND, Key::A);
+    h.get_by_label("Title").type_text("Preserved warnings");
+    h.run_steps(2);
+    h.get_by_label("Apply properties").click();
+    h.run_steps(4);
+    assert_eq!(tree(&h).element(ObjRef::new(8, 0)).unwrap().title.as_deref(), Some("Preserved warnings"));
+    assert_eq!(tree(&h).issues, issues);
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Z);
+    h.run_steps(3);
+    assert_eq!(tree(&h).element(ObjRef::new(8, 0)).unwrap().title.as_deref(), Some("Introduction"));
+}
+
+#[test]
+fn preserved_unreachable_association_warns_without_disabling_safe_reorder() {
+    let bytes = String::from_utf8(TAGGED.to_vec())
+        .unwrap()
+        .replace("/Nums [0 [8 0 R] 1 []]", "/Nums [0 [8 0 R 99 0 R] 1 []]")
+        .replace("trailer <<", "99 0 obj << /Type /StructElem /S /P /K 1 /Pg 3 0 R >> endobj\ntrailer <<")
+        .into_bytes();
+    let mut h = harness_bytes(bytes);
+    let before = tree(&h);
+    assert!(!before.issues.is_empty());
+    assert!(before.edit_blockers.is_empty());
+    assert_eq!(before.preserved_associations.len(), 1);
+    assert!(!h.get_by_label("New tag").accesskit_node().is_disabled());
+    menu(&mut h, "<P> Body", "Move up");
+    assert_eq!(tag_ids(&h), [9, 8, 10]);
+    assert_eq!(tree(&h).preserved_associations, before.preserved_associations);
+}
+
+fn namespace_fixture(namespace: &str, role: &str, mappings: &str) -> Vec<u8> {
+    String::from_utf8(TAGGED.to_vec())
+        .unwrap()
+        .replace("%PDF-1.7", "%PDF-2.0")
+        .replace("/ParentTree 11 0 R", "/ParentTree 11 0 R /Namespaces [12 0 R]")
+        .replace("/S /H1 /T (Introduction)", &format!("/S /{role} /NS 12 0 R /T (Introduction)"))
+        .replace("trailer <<", &format!("12 0 obj << /Type /Namespace /NS ({namespace}) {mappings} >> endobj\ntrailer <<"))
+        .into_bytes()
+}
+fn choose_standard_type(h: &mut Harness<'static, PdfCraftApp>, role: &str) {
+    h.get_by_label(role).scroll_to_me();
+    h.run_steps(3);
+    h.get_by_label(role).click();
+    h.run_steps(2);
+    h.get_by_label("Apply properties").click();
+    h.run_steps(4);
+}
+#[test]
+fn pdf2_type_suggestions_offer_em_and_strong_without_legacy_quote_or_note() {
+    use pdfcraft_engine::a11y::tags::PDF_20_NAMESPACE;
+    let mut h = harness_bytes(namespace_fixture(PDF_20_NAMESPACE, "H1", ""));
+    assert!(tree(&h).edit_blockers.is_empty(), "{:?}", tree(&h).issues);
+    h.get_by_label("<H1> Introduction").click();
+    h.run_steps(2);
+    open_properties(&mut h);
+    h.get_by_label("Standard types").click();
+    h.run_steps(3);
+    h.get_by_label("Em");
+    h.get_by_label("Strong");
+    assert!(h.query_by_label("Quote").is_none());
+    assert!(h.query_by_label("Note").is_none());
+    choose_standard_type(&mut h, "Em");
+    let t = tree(&h);
+    let tag = t.element(ObjRef::new(8, 0)).unwrap();
+    assert_eq!(tag.role, "Em");
+    assert_eq!(tag.namespace, Some(ObjRef::new(12, 0)));
+    assert_eq!(tag.namespace_uri.as_deref(), Some(PDF_20_NAMESPACE));
+}
+#[test]
+fn default_pdf17_type_suggestions_offer_quote_without_pdf2_only_names() {
+    let mut h = harness();
+    h.get_by_label("<H1> Introduction").click();
+    h.run_steps(2);
+    open_properties(&mut h);
+    h.get_by_label("Standard types").click();
+    h.run_steps(3);
+    h.get_by_label("Quote");
+    h.get_by_label("Note");
+    assert!(h.query_by_label("Em").is_none());
+    assert!(h.query_by_label("Strong").is_none());
+    choose_standard_type(&mut h, "Quote");
+    assert_eq!(tree(&h).element(ObjRef::new(8, 0)).unwrap().role, "Quote");
+    assert!(tree(&h).element(ObjRef::new(8, 0)).unwrap().namespace.is_none());
+}
+#[test]
+fn new_child_uses_default_pdf17_suggestions_even_under_pdf2_parent() {
+    use pdfcraft_engine::a11y::tags::{PDF_17_NAMESPACE, PDF_20_NAMESPACE};
+    let mut h = harness_bytes(namespace_fixture(PDF_20_NAMESPACE, "H1", ""));
+    menu(&mut h, "<H1> Introduction", "New child tag");
+    h.get_by_label("Standard types").click();
+    h.run_steps(3);
+    h.get_by_label("Quote");
+    assert!(h.query_by_label("Em").is_none());
+    choose_standard_type(&mut h, "Quote");
+    let t = tree(&h);
+    let child = t.elements.iter().find(|e| e.parent == Some(ObjRef::new(8, 0)) && e.role == "Quote").unwrap();
+    assert!(child.namespace.is_none(), "NS is not inherited from the parent");
+    assert_eq!(child.standard_namespace_uri.as_deref(), Some(PDF_17_NAMESPACE));
+}
+#[test]
+fn custom_and_mathml_namespaces_keep_manual_type_entry_without_pdf_suggestions() {
+    use pdfcraft_engine::a11y::tags::MATHML_NAMESPACE;
+    for (namespace, original, replacement, mappings) in [
+        ("urn:pdfcraft:custom", "CustomHeading", "CustomBody", "/RoleMapNS << /CustomHeading /H1 /CustomBody /P >>"),
+        (MATHML_NAMESPACE, "math", "mrow", ""),
+    ] {
+        let mut h = harness_bytes(namespace_fixture(namespace, original, mappings));
+        assert!(tree(&h).edit_blockers.is_empty(), "{:?}", tree(&h).issues);
+        h.get_by_label(&format!("<{original}> Introduction")).click();
+        h.run_steps(2);
+        open_properties(&mut h);
+        assert!(h.get_by_label("Standard types").accesskit_node().is_disabled());
+        assert!(!h.get_by_label("Type").accesskit_node().is_disabled());
+        h.get_by_label("No PDF standard suggestions for this namespace. Enter a type defined by its namespace.");
+        h.get_by_label("Type").click();
+        h.key_press_modifiers(Modifiers::COMMAND, Key::A);
+        h.get_by_label("Type").type_text(replacement);
+        h.run_steps(2);
+        h.get_by_label("Apply properties").click();
+        h.run_steps(4);
+        let t = tree(&h);
+        let tag = t.element(ObjRef::new(8, 0)).unwrap();
+        assert_eq!(tag.role, replacement);
+        assert_eq!(tag.namespace, Some(ObjRef::new(12, 0)));
+        assert_eq!(tag.namespace_uri.as_deref(), Some(namespace));
+    }
+}
+
+// Positive Save/Undo tests need a valid incremental base. TAGGED intentionally lacks
+// an xref table, and its first save can be a full rewrite that recycles identities.
+fn harness_with_incremental_base() -> Harness<'static, PdfCraftApp> {
+    let mut session = pdfcraft_engine::Session::new();
+    let id = session.open("valid-base.pdf", None, TAGGED.to_vec().into(), None).unwrap();
+    let bytes = session.save_full_bytes(id).unwrap();
+    harness_bytes(bytes.as_ref().clone())
+}
+
+#[test]
+fn metadata_save_undo_redo_retains_navigation_and_recomputes_highlights() {
+    let mut h = harness_with_incremental_base();
+    h.get_by_label("<H1> Introduction").click();
+    h.run_steps(3);
+    h.get_by_label("Content highlighted");
+    open_properties(&mut h);
+    h.get_by_label("Title").click();
+    h.key_press_modifiers(Modifiers::COMMAND, Key::A);
+    h.get_by_label("Title").type_text("Saved heading");
+    h.run_steps(2);
+    h.get_by_label("Apply properties").click();
+    h.run_steps(3);
+    h.get_by_label("Content highlighted");
+    let id = h.state().views[0].id;
+    let bytes = h.state().session.save_bytes(id).unwrap();
+    h.state_mut().session.mark_saved(id, bytes, None).unwrap();
+    h.run_steps(3);
+    h.get_by_label("Content highlighted");
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Z);
+    h.run_steps(3);
+    assert_eq!(h.get_by_label("<H1> Introduction").accesskit_node().is_selected(), Some(true));
+    h.get_by_label("Content highlighted");
+    assert!(h.query_by_label("Content bounds unavailable").is_none());
+    h.key_press_modifiers(Modifiers::COMMAND | Modifiers::SHIFT, Key::Z);
+    h.run_steps(3);
+    assert_eq!(h.get_by_label("<H1> Saved heading").accesskit_node().is_selected(), Some(true));
+    h.get_by_label("Content highlighted");
+}
+
+#[test]
+fn role_history_change_clears_navigation_focus_and_stale_geometry_status() {
+    let mut h = harness();
+    h.get_by_label("<H1> Introduction").click();
+    h.run_steps(3);
+    open_properties(&mut h);
+    h.get_by_label("Type").click();
+    h.key_press_modifiers(Modifiers::COMMAND, Key::A);
+    h.get_by_label("Type").type_text("H2");
+    h.run_steps(2);
+    h.get_by_label("Apply properties").click();
+    h.run_steps(3);
+    h.get_by_label("Content highlighted");
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Z);
+    h.run_steps(3);
+    let tag = h.get_by_label("<H1> Introduction");
+    assert_eq!(tag.accesskit_node().is_selected(), Some(false));
+    assert!(!tag.accesskit_node().is_focused());
+    assert!(h.query_by_label("Content highlighted").is_none());
+    assert!(h.query_by_label("Content bounds unavailable").is_none());
+}
+
+#[test]
+fn full_rewrite_recycled_identities_do_not_retain_navigation() {
+    let bytes = String::from_utf8(TAGGED.to_vec()).unwrap().replace("8 0 R", "88 0 R").replace("8 0 obj", "88 0 obj").into_bytes();
+    let mut h = harness_bytes(bytes);
+    h.get_by_label("<H1> Introduction").click();
+    h.run_steps(3);
+    h.get_by_label("Content highlighted");
+    let before = tree(&h);
+    let id = h.state().views[0].id;
+    let bytes = h.state().session.save_full_bytes(id).unwrap();
+    h.state_mut().session.mark_saved(id, bytes, None).unwrap();
+    h.run_steps(3);
+    let after = tree(&h);
+    assert_ne!(
+        before.elements.iter().map(|e| e.id).collect::<Vec<_>>(),
+        after.elements.iter().map(|e| e.id).collect::<Vec<_>>(),
+        "fixture must exercise rewritten identities"
+    );
+    let tag = h.get_by_label("<H1> Introduction");
+    assert_eq!(tag.accesskit_node().is_selected(), Some(false));
+    assert!(!tag.accesskit_node().is_focused());
+    assert!(h.query_by_label("Content highlighted").is_none());
+    assert!(h.query_by_label("Content bounds unavailable").is_none());
+}
+
+#[test]
+fn content_selection_survives_metadata_save_undo_redo_only_with_matching_bindings() {
+    let mut h = harness_with_incremental_base();
+    let id = h.state().views[0].id;
+    let body = tree(&h).elements.iter().find(|e| e.title.as_deref() == Some("Body")).unwrap().id;
+    h.state_mut()
+        .session
+        .apply(
+            id,
+            pdfcraft_engine::Edit::UpdateTag {
+                id: body,
+                properties: pdfcraft_engine::a11y::tags::TagProperties { title: Some(Some("Updated body".into())), ..Default::default() },
+            },
+        )
+        .unwrap();
+    h.run_steps(3);
+    h.get_by_label("Content · MCID 0").click();
+    h.run_steps(3);
+    h.get_by_label("Content highlighted");
+    let bytes = h.state().session.save_bytes(id).unwrap();
+    h.state_mut().session.mark_saved(id, bytes, None).unwrap();
+    h.run_steps(3);
+    assert_eq!(h.get_by_label("Content · MCID 0").accesskit_node().is_selected(), Some(true));
+    h.get_by_label("Content highlighted");
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Z);
+    h.run_steps(3);
+    assert_eq!(tree(&h).element(body).unwrap().title.as_deref(), Some("Body"));
+    assert_eq!(h.get_by_label("Content · MCID 0").accesskit_node().is_selected(), Some(true));
+    h.get_by_label("Content highlighted");
+    h.key_press_modifiers(Modifiers::COMMAND | Modifiers::SHIFT, Key::Z);
+    h.run_steps(3);
+    assert_eq!(tree(&h).element(body).unwrap().title.as_deref(), Some("Updated body"));
+    assert_eq!(h.get_by_label("Content · MCID 0").accesskit_node().is_selected(), Some(true));
+    h.get_by_label("Content highlighted");
 }

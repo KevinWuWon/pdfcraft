@@ -2149,3 +2149,20 @@
 	Content · MCID {id} · stream	内容 · MCID {id} · 流
 	Object reference · {object}	对象引用 · {object}
 	Unsupported · {description}	不支持 · {description}
+
+# Compact accessibility tag panel and native properties dialogs.
+	Action needed	需要操作
+	Approximate content bounds	近似内容边界
+	Content bounds unavailable	内容边界不可用
+	Content highlighted	内容已高亮显示
+	Convert to artifact	转换为装饰性内容
+	Delete tags	删除标签
+	Namespace:	命名空间：
+	No PDF standard suggestions for this namespace. Enter a type defined by its namespace.	此命名空间没有可建议的 PDF 标准类型。请输入该命名空间中定义的类型。
+	Search tags	搜索标签
+	Structure is read-only. Metadata can still be edited.	结构为只读。仍可编辑元数据。
+	Tag properties (F2)	标签属性 (F2)
+	Unsaved property changes. Apply them or choose Cancel properties to discard them.	属性更改尚未保存。请应用更改，或选择“取消属性更改”以放弃更改。
+	warning	条警告
+	warnings	条警告
+	{count} tag	{count} 个标签
